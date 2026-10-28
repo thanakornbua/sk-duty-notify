@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duty roster import (prototype)</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+  .stub { background: #fff3cd; border: 1px solid #e0c36a; padding: .5rem .75rem; border-radius: 4px; }
+  pre { background: #f4f4f4; padding: .75rem; overflow: auto; }
+  .err { color: #a00; } .ok { color: #070; }
+  input[type=text] { width: 22rem; }
+</style>
+</head>
+<body>
+<h1>Duty roster import</h1>
+<p class="stub"><strong>STUB AUTH:</strong> the admin token below is a prototype stand-in, not real authentication.</p>
+
+<p><label>Admin token <input id="token" type="text" value="stub-admin-token"></label></p>
+<p><input id="file" type="file" accept=".xlsx"> <button id="stage" disabled>Stage import</button></p>
+<p id="status"></p>
+<pre id="preview" hidden></pre>
+<p><button id="publish" hidden>Publish revision</button></p>
+
+<script src="/vendor/xlsx.full.min.js"></script><!-- SheetJS 0.20.3 (vendored, pinned) -->
+<script type="module">
+import { parseGrid } from "/grid.js";
+
+const $ = (id) => document.getElementById(id);
+let normalized = null, stagedId = null;
+const say = (msg, cls = "") => { $("status").className = cls; $("status").textContent = msg; };
+const headers = () => ({ "content-type": "application/json", authorization: "Bearer " + $("token").value });
+
+$("file").addEventListener("change", async (e) => {
+  normalized = null; stagedId = null; $("stage").disabled = true; $("publish").hidden = true; $("preview").hidden = true;
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    // Raw values (no cellDates) so Excel serials, 1900/1904 and Buddhist years are handled by grid.js.
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: false });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true });
+    const date1904 = !!wb.Workbook?.WBProps?.date1904;
+    const res = parseGrid(grid, { date1904, merges: ws["!merges"] ?? [] });
+    if (!res.ok) return say(res.errors.join("\n"), "err");
+    normalized = res.data;
+    $("preview").textContent = JSON.stringify(normalized, null, 1);
+    $("preview").hidden = false;
+    say(`Parsed ${normalized.days.length} date column(s). The server will revalidate.`, "ok");
+    $("stage").disabled = false;
+  } catch (err) { say("Could not read file: " + err.message, "err"); }
+});
+
+$("stage").addEventListener("click", async () => {
+  const r = await fetch("/admin/imports", { method: "POST", headers: headers(), body: JSON.stringify(normalized) });
+  const j = await r.json();
+  if (!r.ok) return say((j.errors ?? [j.error]).join("\n"), "err");
+  stagedId = j.id;
+  say(j.duplicate ? `Same content as revision ${j.id} (${j.status}); nothing changed.` : `Staged revision ${j.id}.`, "ok");
+  $("publish").hidden = j.status !== "STAGED";
+});
+
+$("publish").addEventListener("click", async () => {
+  const r = await fetch(`/admin/imports/${stagedId}/publish`, { method: "POST", headers: headers() });
+  const j = await r.json();
+  if (!r.ok) return say((j.errors ?? [j.error]).join("\n"), "err");
+  say(`Revision ${j.id} is ${j.status}.`, "ok");
+  $("publish").hidden = true;
+});
+</script>
+</body>
+</html>

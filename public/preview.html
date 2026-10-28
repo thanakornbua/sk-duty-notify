@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LINE message preview (mock)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem auto; max-width: 78rem; padding: 0 1rem; color: #1b1b1b; background: #fafafa; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin: 0 0 .15rem; }
+  .stub { background: #fff3cd; border: 1px solid #e0c36a; padding: .5rem .75rem; border-radius: 4px; }
+  .note { color: #555; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.25rem; margin-top: 1rem; }
+  .col h2 + p { margin: 0 0 .5rem; color: #555; font-size: 13px; }
+  /* phone-ish chat. Styling is an approximation, not LINE's exact rendering. */
+  .phone { border: 1px solid #c9ced6; border-radius: 14px; overflow: hidden; background: #dce3ed; max-width: 360px; }
+  .bar { background: #fff; padding: .55rem .8rem; font-weight: 600; border-bottom: 1px solid #d5dae1; }
+  .bar small { font-weight: 400; color: #666; }
+  .chat { padding: .7rem .6rem 1rem; display: flex; flex-direction: column; gap: .5rem; min-height: 220px; }
+  .day { align-self: center; background: rgba(0,0,0,.28); color: #fff; border-radius: 10px; padding: 0 .6rem; font-size: 11px; }
+  .row { display: flex; align-items: flex-end; gap: .3rem; max-width: 92%; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #5b6b82; color: #fff; display: grid; place-items: center; font-size: 12px; flex: none; align-self: flex-start; }
+  .bubble { background: #fff; border-radius: 4px 14px 14px 14px; padding: .5rem .7rem; white-space: pre-wrap; word-break: break-word; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
+  .card { background: #fff; border-radius: 4px 14px 14px 14px; overflow: hidden; width: 250px; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
+  .card .t { padding: .65rem .8rem; white-space: pre-wrap; }
+  .card button { display: block; width: 100%; border: 0; border-top: 1px solid #e2e5ea; background: #fff; color: #06a94d; font: inherit; font-weight: 600; padding: .6rem; cursor: pointer; }
+  .card button:hover { background: #f3faf6; } .card button:focus-visible { outline: 2px solid #06a94d; outline-offset: -2px; }
+  .time { font-size: 10px; color: #4a5568; align-self: flex-end; white-space: nowrap; }
+  .sep { align-self: center; font-size: 11px; color: #3b4658; background: rgba(255,255,255,.55); border-radius: 8px; padding: 0 .5rem; text-align: center; }
+  .controls { margin: .5rem 0 0; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; background: #fff; }
+  th, td { border: 1px solid #ddd; padding: .35rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f3f3f3; }
+  #err { color: #b00020; }
+  input[type=text] { width: 16rem; }
+</style>
+</head>
+<body>
+<h1>LINE message preview</h1>
+<p class="stub"><strong>STUB AUTH:</strong> the admin token is a prototype stand-in, not real authentication.</p>
+<p><label>Admin token <input id="token" type="text" value="stub-admin-token"></label>
+  <button id="go">Load</button> <span id="err"></span></p>
+<p class="note" id="intro"></p>
+<p class="note"><strong>This is a mock.</strong> The message text, buttons and timing come from the same code the scheduler uses, so they match what would be pushed.
+  The phone styling is only an approximation: LINE's real rendering varies by app version and device. Nothing on this page is sent to anyone.
+  Press a button to see the reply the bot would send.</p>
+
+<div class="grid" id="phones"></div>
+
+<h2 style="margin-top:1.6rem">All bot replies</h2>
+<table id="replies"></table>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const tz = "Asia/Bangkok";
+const hm = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
+const dayLabel = (ms) => new Date(ms).toLocaleDateString("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short", year: "numeric" });
+const store = { get: () => { try { return sessionStorage.getItem("tok"); } catch { return null; } }, set: (v) => { try { sessionStorage.setItem("tok", v); } catch { /* optional */ } } };
+if (store.get()) $("token").value = store.get();
+
+const TITLES = {
+  ACK: ["Day before: roster + acknowledge", "Sent to each of the 10 people on duty, individually."],
+  AM: ["Duty day morning: AM check-in", "The same 10 people, one push each."],
+  PM: ["Duty day afternoon: PM check-in", "Independent of the AM check-in."],
+};
+
+function bubbleRow(node, sentAt) {
+  const row = el("div", "row");
+  row.append(el("div", "avatar", "D"), node, el("span", "time", hm(sentAt)));
+  return row;
+}
+function messageNode(m, onPress) {
+  if (m.type === "text") return el("div", "bubble", m.text);
+  const card = el("div", "card");
+  card.append(el("div", "t", m.template.text));
+  for (const a of m.template.actions) {
+    const b = el("button", "", a.label);
+    b.type = "button";
+    b.title = `postback data: ${a.data}`;
+    b.addEventListener("click", onPress);
+    card.append(b);
+  }
+  return card;
+}
+
+function render(d, replies) {
+  $("intro").textContent = `Showing duty day ${d.dutyDate} (${d.source}). Times are Asia/Bangkok.`;
+  const root = $("phones"); root.replaceChildren();
+  const press = { on_time: 0, late: 1, someone_else: 4, too_early: 5, after_cutoff: 6 };
+
+  for (const s of d.schedule) {
+    const col = el("div", "col");
+    col.append(el("h2", "", TITLES[s.kind][0]), el("p", "", TITLES[s.kind][1]));
+    const phone = el("div", "phone"), bar = el("div", "bar", "Duty Notify ");
+    bar.append(el("small", "", "(bot)"));
+    const chat = el("div", "chat");
+    phone.append(bar, chat);
+
+    const add = (node) => { chat.append(node); return node; };
+    add(el("div", "day", dayLabel(s.sendAt)));
+    // A reply appears directly under the card that was pressed, after any earlier replies to that card.
+    const lastUnder = new WeakMap();
+    const botReply = (card, text) => {
+      const anchor = card.closest(".row");
+      const row = bubbleRow(el("div", "bubble", text), s.sendAt + 60_000);
+      (lastUnder.get(anchor) ?? anchor).after(row);
+      lastUnder.set(anchor, row);
+    };
+
+    const mode = el("select");
+    for (const [v, label] of [["on_time", "on time"], ["late", `late (over ${d.notes.lateAfterMinutes} min after the push)`],
+        ["someone_else", "pressed by someone else"], ["too_early", "before the window opens"], ["after_cutoff", "after the cutoff"]]) {
+      const o = el("option", "", label); o.value = v; mode.append(o);
+    }
+    let done = false;
+    const onPress = (ev) => {
+      const key = mode.value, card = ev.currentTarget;
+      if (key === "on_time" || key === "late") {
+        botReply(card, done ? replies[key === "late" ? 3 : 2].text : replies[press[key]].text);
+        done = true;
+      } else botReply(card, replies[press[key]].text);
+    };
+
+    for (const m of s.messages) add(bubbleRow(messageNode(m, onPress), s.sendAt));
+    add(el("div", "sep", `${s.reminderAfterMinutes} min after the push was accepted, only if not done yet (sent once, never repeated)`));
+    for (const m of s.reminder) add(bubbleRow(messageNode(m, onPress), s.sendAt + s.reminderAfterMinutes * 60_000));
+    add(el("div", "sep", `Window closes ${hm(s.cutoffAt)}${s.cutoffAt - s.sendAt > 86_400_000 ? " the next day" : ""}; after that no more messages for this action`));
+
+    const ctl = el("p", "controls"); ctl.append("If a button is pressed: ", mode, "  ");
+    const reset = el("button", "", "Clear replies"); reset.type = "button";
+    reset.addEventListener("click", () => { render(d, replies); });
+    ctl.append(reset);
+
+    const when = el("p", "note", `Sent ${dayLabel(s.sendAt)} ${hm(s.sendAt)}.`);
+    col.append(when, phone, ctl);
+    root.append(col);
+  }
+
+  const t = $("replies"); t.replaceChildren();
+  const head = el("tr"); head.append(el("th", "", "When"), el("th", "", "Bot replies")); t.append(head);
+  for (const r of replies) { const tr = el("tr"); tr.append(el("td", "", r.scenario), el("td", "", r.text)); t.append(tr); }
+}
+
+async function load() {
+  $("err").textContent = "";
+  store.set($("token").value);
+  try {
+    const r = await fetch("/admin/preview.json", { headers: { authorization: "Bearer " + $("token").value } });
+    if (!r.ok) throw new Error(r.status === 401 ? "Unauthorized (check the admin token)" : "HTTP " + r.status);
+    const d = await r.json();
+    render(d, d.replies);
+  } catch (e) { $("err").textContent = e.message; }
+}
+$("go").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>

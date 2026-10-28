@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duty notifications dashboard (prototype)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem auto; max-width: 78rem; padding: 0 1rem; color: #1b1b1b; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; }
+  .stub { background: #fff3cd; border: 1px solid #e0c36a; padding: .5rem .75rem; border-radius: 4px; }
+  .legend { color: #555; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: .4rem 0 1rem; }
+  th, td { border: 1px solid #ddd; padding: .3rem .5rem; text-align: left; vertical-align: top; }
+  th { background: #f3f3f3; }
+  .alert { padding: .4rem .7rem; margin: .3rem 0; border-left: 5px solid; }
+  .high { border-color: #b00020; background: #fdecee; } .warn { border-color: #b36b00; background: #fff4e0; }
+  .ok { color: #0a6b2d; } .bad { color: #b00020; font-weight: 600; } .mid { color: #8a5a00; } .dim { color: #666; }
+  .line { display: block; white-space: nowrap; }
+  .tag { font-weight: 600; }
+  #err { color: #b00020; }
+  input[type=text] { width: 16rem; }
+</style>
+</head>
+<body>
+<h1>Duty notifications dashboard</h1>
+<p class="stub"><strong>STUB AUTH:</strong> the admin token is a prototype stand-in, not real authentication. Replace it before any real use.</p>
+<p><label>Admin token <input id="token" type="text" value="stub-admin-token"></label>
+   <button id="go">Refresh</button> <span id="updated" class="dim"></span> <span id="err"></span></p>
+<p class="legend"><strong>Push</strong> = what LINE's API did with our message (accepted by the API; this does not mean it was received or read).
+   <strong>User</strong> = what the person did (pressed the button). The two are tracked separately. Times are Asia/Bangkok.</p>
+
+<div id="alerts"></div>
+<h2>Scheduler</h2><div id="sched"></div>
+<div id="days"></div>
+<h2>Failed jobs</h2><div id="failed"></div>
+<h2>Unbound staff</h2><div id="unbound"></div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const hm = (ms) => ms == null ? "" : new Date(ms).toLocaleTimeString("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
+const dhm = (ms) => ms == null ? "never" : new Date(ms).toLocaleString("en-GB", { timeZone: "Asia/Bangkok", hour12: false });
+
+const store = { get: () => { try { return sessionStorage.getItem("tok"); } catch { return null; } },
+                set: (v) => { try { sessionStorage.setItem("tok", v); } catch { /* optional */ } } };
+if (store.get()) $("token").value = store.get();
+
+function pushText(p, label) {
+  if (!p) return null;
+  const s = p.status;
+  if (s === "API_ACCEPTED") return [`${label} accepted ${hm(p.acceptedAt)}`, "ok"];
+  if (s === "FAILED") return [`${label} FAILED: ${p.error ?? ""}`, "bad"];
+  if (s === "RETRY_WAIT") return [`${label} retrying (try ${p.attempts}) ${p.error ?? ""}`, "mid"];
+  if (s === "LEASED") return [`${label} sending`, "mid"];
+  if (s === "QUEUED") return [`${label} queued for ${hm(p.nextAttemptAt)}`, "dim"];
+  if (s === "SUPPRESSED") return [`${label} not needed`, "dim"];
+  return [`${label} ${s.toLowerCase()}`, "dim"];
+}
+function userText(u) {
+  if (u.state === "COMPLETED") return [`done ${hm(u.completedAt)}${u.outcome === "late" ? " (late)" : ""}`, u.outcome === "late" ? "mid" : "ok"];
+  if (u.state === "PENDING") return ["pending", "dim"];
+  if (u.state === "EXPIRED") return ["EXPIRED", "bad"];
+  return [u.state.toLowerCase(), "dim"];
+}
+
+function render(d) {
+  $("updated").textContent = "Updated " + dhm(d.now);
+
+  const al = $("alerts"); al.replaceChildren();
+  if (!d.alerts.length) al.append(el("p", "ok", "No alerts."));
+  for (const a of d.alerts) al.append(el("div", `alert ${a.severity}`, `${a.severity.toUpperCase()}: ${a.message}`));
+
+  const s = d.scheduler, sc = $("sched"); sc.replaceChildren();
+  const line = el("p");
+  line.append(el("span", `tag ${s.status === "OK" ? "ok" : "bad"}`, s.status), ` last run ${dhm(s.lastRunAt)}`,
+    s.ageSeconds != null ? ` (${s.ageSeconds}s ago)` : "");
+  sc.append(line);
+  if (s.lastSummary) sc.append(el("p", "dim", "Last run: " + Object.entries(s.lastSummary).map(([k, v]) => `${k}=${v}`).join(" ")));
+
+  const days = $("days"); days.replaceChildren();
+  for (const day of d.days) {
+    const h = el("h2"); h.append(day.date === d.today ? "Today " : "Tomorrow ", day.date, " — ");
+    h.append(el("span", day.state === "UNKNOWN" ? "bad" : day.state === "DUTY" ? "ok" : "dim",
+      day.state === "UNKNOWN" ? "UNKNOWN (no roster data)" : day.state === "NO_DUTY" ? "NO DUTY" : "DUTY"));
+    days.append(h);
+    if (!day.rows.length) continue;
+    const t = el("table"), head = el("tr");
+    for (const c of ["Position", "Staff", "LINE", "ACK", "AM", "PM"]) head.append(el("th", "", c));
+    t.append(head);
+    for (const r of day.rows) {
+      const tr = el("tr");
+      tr.append(el("td", "", r.position), el("td", "", `${r.staffId} ${r.label}`), el("td", r.bound ? "ok" : "bad", r.bound ? "linked" : "NOT LINKED"));
+      for (const a of r.actions) {
+        const td = el("td");
+        if (!a) { td.append(el("span", "dim", "not planned yet")); tr.append(td); continue; }
+        for (const [txt, cls] of [pushText(a.push.initial, "Push") ?? ["Push: none", "dim"], pushText(a.push.reminder, "Reminder")].filter(Boolean)) {
+          td.append(el("span", `line ${cls}`, txt));
+        }
+        const [ut, uc] = userText(a.user);
+        const u = el("span", "line"); u.append("User: ", el("span", `tag ${uc}`, ut));
+        td.append(u);
+        tr.append(td);
+      }
+      t.append(tr);
+    }
+    days.append(t);
+  }
+
+  const f = $("failed"); f.replaceChildren();
+  if (!d.failedJobs.total) f.append(el("p", "ok", "None."));
+  else {
+    f.append(el("p", "bad", `${d.failedJobs.total} failed (showing ${d.failedJobs.items.length})`));
+    const t = el("table"), head = el("tr");
+    for (const c of ["Duty date", "Staff", "Action", "Phase", "Tries", "Error", "Updated"]) head.append(el("th", "", c));
+    t.append(head);
+    for (const j of d.failedJobs.items) {
+      const tr = el("tr");
+      for (const v of [j.dutyDate, j.staffId, j.kind, j.phase, j.attempts, j.error ?? "", dhm(j.updatedAt)]) tr.append(el("td", "", String(v)));
+      t.append(tr);
+    }
+    f.append(t);
+  }
+
+  const u = $("unbound"); u.replaceChildren();
+  u.append(el("p", d.unbound.onDuty.length ? "bad" : "ok",
+    d.unbound.onDuty.length ? `${d.unbound.onDuty.length} unlinked assignment(s) on duty today/tomorrow:` : "Everyone on duty today/tomorrow is linked."));
+  if (d.unbound.onDuty.length) {
+    const ul = el("ul");
+    for (const x of d.unbound.onDuty) ul.append(el("li", "", `${x.dutyDate} ${x.staffId} ${x.label}`));
+    u.append(ul);
+  }
+  u.append(el("p", "dim", `Pool: ${d.unbound.poolUnbound} of ${d.unbound.poolTotal} active staff have no LINE account linked.`));
+}
+
+async function load() {
+  $("err").textContent = "";
+  store.set($("token").value);
+  try {
+    const r = await fetch("/admin/dashboard.json", { headers: { authorization: "Bearer " + $("token").value } });
+    if (!r.ok) throw new Error(r.status === 401 ? "Unauthorized (check the admin token)" : "HTTP " + r.status);
+    render(await r.json());
+  } catch (e) { $("err").textContent = e.message; }
+}
+$("go").addEventListener("click", load);
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Copy to .dev.vars (gitignored). Synthetic placeholders only.
+LINE_CHANNEL_SECRET=replace-me
+LINE_CHANNEL_ACCESS_TOKEN=replace-me
+ADMIN_TOKEN=stub-admin-token
