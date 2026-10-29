@@ -24,6 +24,8 @@ export class FakeLineClient implements LineClient {
   readonly replies: { replyToken: string; messages: LineMessage[] }[] = [];
   /** Set to make verifyIdToken throw (LINE unreachable). */
   verifyDown = false;
+  /** Set to make reply() report failure. */
+  replyFails = false;
   private script: Failure[] = [];
   private byKey = new Map<string, string>();
 
@@ -49,6 +51,7 @@ export class FakeLineClient implements LineClient {
   }
 
   async reply(replyToken: string, messages: LineMessage[]) {
+    if (this.replyFails) return { ok: false };
     this.replies.push({ replyToken, messages });
     return { ok: true };
   }

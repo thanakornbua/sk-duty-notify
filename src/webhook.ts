@@ -66,7 +66,12 @@ export async function handleWebhook(req: Request, env: Env, clock: Clock, line?:
       return new Response("temporary failure", { status: 500 });
     }
     if (reply && ev.replyToken && line) {
-      try { await line.reply(ev.replyToken, [{ type: "text", text: reply } as LineMessage]); } catch { /* best effort */ }
+      // Best effort, but never silent: a failed reply is logged and marked on the event row.
+      const ok = await line.reply(ev.replyToken, [{ type: "text", text: reply } as LineMessage]).then((r) => r.ok, () => false);
+      if (!ok) {
+        console.error("webhook reply failed", id);
+        await env.DB.prepare("UPDATE webhook_events SET outcome = 'reply_failed' WHERE webhook_event_id = ?").bind(id).run().catch(() => {});
+      }
     }
   }
   return new Response("ok");

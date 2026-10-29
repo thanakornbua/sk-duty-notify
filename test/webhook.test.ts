@@ -47,6 +47,13 @@ describe("webhook", () => {
     expect((await db.prepare("SELECT COUNT(*) AS n FROM checkins").first<{ n: number }>())!.n).toBe(0);
   });
 
+  it("a failed reply is recorded on the event, not swallowed", async () => {
+    line.replyFails = true;
+    const body = follow("e9");
+    expect((await post(body, await sign(body))).status).toBe(200);
+    expect((await db.prepare("SELECT outcome FROM webhook_events WHERE webhook_event_id = 'e9'").first())!.outcome).toBe("reply_failed");
+  });
+
   it("group events are recorded and ignored", async () => {
     const body = JSON.stringify({ events: [{ type: "message", webhookEventId: "e3", replyToken: "r", source: { type: "group", groupId: "G" }, message: { type: "text" } }] });
     await post(body, await sign(body));

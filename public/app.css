@@ -6,6 +6,8 @@ body { margin: 0; font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe
 .page { max-width: 80rem; margin: 0 auto; padding: 4rem 1rem 4rem; }
 .page.page--bare { padding-top: 2rem; } /* pages without the shell header (login, LIFF); beats the phone rule below */
 .nowrap { white-space: nowrap; }
+.brand-mark { width: 1.75rem; height: 1.75rem; margin-right: .5rem; }
+.brand-hero { display: block; width: 4rem; height: 4rem; margin-bottom: .75rem; }
 .page--narrow { max-width: 30rem; }
 .h1 { font-size: 2rem; line-height: 2.5rem; font-weight: 400; margin: 1rem 0 1.5rem; }          /* heading-05 */
 .h2 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 400; margin: 2.5rem 0 1rem; }      /* heading-03 */

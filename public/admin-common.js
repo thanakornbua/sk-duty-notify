@@ -39,7 +39,9 @@ export async function shell(active) {
   const link = ([href, label]) => el("li", {}, el("a", { class: "cds--header__menu-item", href, "aria-current": href === active ? "page" : null },
     el("span", { class: "cds--text-truncate--end" }, label)));
   const header = el("header", { class: "cds--header", "aria-label": "SK Duty" },
-    el("a", { class: "cds--header__name", href: "/dashboard" }, el("span", { class: "cds--header__name--prefix" }, "SK"), "\u00a0Duty"),
+    el("a", { class: "cds--header__name", href: "/dashboard" },
+      el("img", { class: "brand-mark", src: "/brand/emblem-96.png", alt: "", width: 28, height: 28 }),
+      el("span", { class: "cds--header__name--prefix" }, "SK"), "\u00a0Duty"),
     el("nav", { class: "cds--header__nav", "aria-label": "Main" }, el("ul", { class: "cds--header__menu-bar" }, NAV.map(link))),
     el("div", { class: "cds--header__global" },
       el("a", { class: "cds--link who body", href: "/account" }, user.displayName),

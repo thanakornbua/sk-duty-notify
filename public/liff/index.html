@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/png" href="/brand/emblem-32.png">
+<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+<script src="https://static.line-scdn.net/liff/edge/versions/2.24.0/sdk.js"></script>
+</head>
+<body>
+<!--
+  The LIFF endpoint URL itself. liff.line.me/{liffId}/link first opens THIS page with ?liff.state=%2Flink;
+  liff.init() then forwards to /liff/link. Without a liff.state it opens the check-in page.
+-->
+<main class="page page--bare page--narrow">
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="School emblem" width="64" height="64">
+  <p class="helper">SK Duty</p>
+  <div id="msg" class="body secondary" style="margin-top:1rem">Opening…</div>
+</main>
+<script type="module">
+import { notification } from "/admin-common.js";
+
+const msg = document.getElementById("msg");
+try {
+  const { liffId } = await fetch("/api/liff-config").then((r) => r.json());
+  if (!liffId) throw new Error("LIFF is not configured on the server");
+  const forwarding = new URLSearchParams(location.search).has("liff.state");
+  await liff.init({ liffId }); // follows liff.state to the requested page
+  if (!forwarding) location.replace("/liff/checkin");
+} catch (e) {
+  msg.replaceChildren(notification("error", "Could not open", e.message));
+}
+</script>
+</body>
+</html>
