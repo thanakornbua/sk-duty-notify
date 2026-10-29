@@ -1,0 +1,10 @@
+# Copy to .dev.vars (gitignored). Synthetic placeholders only.
+ADMIN_TOKEN=stub-admin-token
+# Dev without LINE: in-memory fake client, accepts fake ID tokens "tok:<userId>". Never in production.
+LINE_CLIENT=fake
+ALLOW_TEST_CLOCK=1
+LIFF_ID=dev-liff
+# Real LINE (Phase 5): Messaging API channel + LINE Login channel of the LIFF app, SAME provider.
+# LINE_CHANNEL_SECRET=replace-me
+# LINE_CHANNEL_ACCESS_TOKEN=replace-me
+# LINE_LOGIN_CHANNEL_ID=replace-me

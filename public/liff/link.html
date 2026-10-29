@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link account</title>
+<link rel="stylesheet" href="/style.css">
+<script src="https://static.line-scdn.net/liff/edge/versions/2.24.0/sdk.js"></script>
+</head>
+<body>
+<main class="narrow">
+  <h1>Link your LINE account</h1>
+  <p class="muted">Enter the one-time code from your duty coordinator. It works once and expires after 15 minutes.</p>
+  <form id="form" class="card">
+    <label for="code">Code</label>
+    <div class="row"><input id="code" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" required style="flex:1;letter-spacing:.15em"></div>
+    <p><button class="primary big" id="go" type="submit" disabled>Link</button></p>
+  </form>
+  <p id="msg" role="status"></p>
+</main>
+<script type="module">
+import { $, api, initLiff, show } from "./liff.js";
+
+const MESSAGES = {
+  bad_code: "That code is not valid. It may have expired or been used already. Ask your coordinator for a new one.",
+  line_account_linked_elsewhere: "This LINE account is already linked to another staff member. Contact your coordinator.",
+  rate_limited: "Too many tries. Wait a minute and try again.",
+  line_unavailable: "LINE could not be reached. Try again in a moment.",
+};
+
+try {
+  if (await initLiff()) $("go").disabled = false;
+} catch (e) {
+  show("msg", `Could not start: ${e.message}`, "bad");
+}
+
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("go").disabled = true;
+  show("msg", "Linking…", "muted");
+  const { status, data } = await api("/api/link", { code: $("code").value });
+  if (status === 200) {
+    $("form").hidden = true;
+    show("msg", `Linked as ${data.label} (${data.staffCode}). You will receive duty notices in this chat.`, "ok");
+  } else {
+    show("msg", MESSAGES[data.error] ?? `Could not link (${data.error ?? status}).`, "bad");
+    $("go").disabled = false;
+  }
+});
+</script>
+</body>
+</html>

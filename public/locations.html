@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duty locations</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+  integrity="sha384-c6Rcwz4e4CITMbu/NBmnNS8yN2sC3cUElMEMfP3vqqKFp7GOYaaBBCqmaWBjmkjb" crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+  integrity="sha384-NElt3Op+9NBMCYaef5HxeJmU4Xeard/Lku8ek6hoPTvYkQPh3zLIrJP7KiRocsxO" crossorigin="anonymous"></script>
+<style>#map { height: 420px; border-radius: 10px; border: 1px solid var(--line); } .pt input { width: 7.5em; }</style>
+</head>
+<body>
+<main>
+  <nav><a href="/dashboard">Dashboard</a><a href="/admin">Members &amp; roster</a><a href="/locations">Locations</a></nav>
+  <h1>Locations</h1>
+  <div class="stub">PROTOTYPE: admin access is a STUB shared token, not real authentication.</div>
+  <div class="row">
+    <select id="pick"></select>
+    <button id="new">New location</button>
+  </div>
+  <div class="card">
+    <div class="row">
+      <label>Code <input id="code" size="10"></label>
+      <label>Name <input id="name" size="24"></label>
+      <label>Allowed GPS accuracy (m) <input id="acc" type="number" min="5" max="500" style="width:6em"></label>
+    </div>
+    <p class="muted">Click the map to add a geofence point; drag a marker to move it. A check-in passes inside ANY point.</p>
+    <div id="map"></div>
+    <table><thead><tr><th>Label</th><th>Lat</th><th>Lng</th><th>Radius (m)</th><th></th></tr></thead><tbody id="points"></tbody></table>
+    <p><button class="primary" id="save">Save location</button> <span id="out"></span></p>
+  </div>
+</main>
+<script type="module">
+import { api, el } from "/admin-common.js";
+
+const $ = (id) => document.getElementById(id);
+const map = L.map("map").setView([13.75, 100.5], 16); // synthetic default view
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
+let data = { locations: [], defaults: { radiusM: 100, allowedAccuracyM: 50 } };
+let points = [], layers = [];
+
+function draw() {
+  layers.forEach((l) => l.remove());
+  layers = [];
+  points.forEach((p, i) => {
+    const m = L.marker([p.lat, p.lng], { draggable: true }).addTo(map);
+    const c = L.circle([p.lat, p.lng], { radius: p.radiusM }).addTo(map);
+    m.on("drag", (e) => c.setLatLng(e.latlng));
+    m.on("dragend", (e) => { const ll = e.target.getLatLng(); p.lat = +ll.lat.toFixed(6); p.lng = +ll.lng.toFixed(6); table(); });
+    layers.push(m, c);
+  });
+  table();
+}
+
+function table() {
+  const num = (p, k) => el("input", { type: "number", step: "any", value: p[k], onchange: (e) => { p[k] = Number(e.target.value); draw(); } });
+  $("points").replaceChildren(...points.map((p, i) => el("tr", { class: "pt" },
+    el("td", {}, el("input", { value: p.label ?? "", onchange: (e) => { p.label = e.target.value; } })),
+    el("td", {}, num(p, "lat")), el("td", {}, num(p, "lng")), el("td", {}, num(p, "radiusM")),
+    el("td", {}, el("button", { onclick: () => { points.splice(i, 1); draw(); } }, "Remove")))));
+}
+
+function edit(loc) {
+  $("code").value = loc?.code ?? "";
+  $("code").disabled = !!loc;
+  $("name").value = loc?.name ?? "";
+  $("acc").value = loc?.allowed_accuracy_m ?? data.defaults.allowedAccuracyM;
+  points = (loc?.points ?? []).map((p) => ({ label: p.label, lat: p.lat, lng: p.lng, radiusM: p.radius_m }));
+  draw();
+  if (points.length) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.3));
+}
+
+async function load(selectCode) {
+  const r = await api("GET", "/admin/api/locations");
+  if (!r.ok) return;
+  data = r.data;
+  $("pick").replaceChildren(el("option", { value: "" }, "— select —"),
+    ...data.locations.map((l) => el("option", { value: l.code, selected: l.code === selectCode }, `${l.code} · ${l.name}`)));
+  edit(data.locations.find((l) => l.code === selectCode));
+}
+
+map.on("click", (e) => { points.push({ lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6), radiusM: data.defaults.radiusM }); draw(); });
+$("pick").addEventListener("change", (e) => edit(data.locations.find((l) => l.code === e.target.value)));
+$("new").addEventListener("click", () => { $("pick").value = ""; edit(null); });
+$("save").addEventListener("click", async () => {
+  const r = await api("POST", "/admin/api/locations", { code: $("code").value.trim(), name: $("name").value.trim(), allowedAccuracyM: Number($("acc").value), points });
+  $("out").textContent = r.ok ? "Saved." : r.data.error;
+  $("out").className = r.ok ? "ok" : "bad";
+  if (r.ok) load($("code").value.trim());
+});
+load();
+</script>
+</body>
+</html>

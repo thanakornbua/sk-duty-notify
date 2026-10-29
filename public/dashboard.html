@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duty dashboard</title>
+<link rel="stylesheet" href="/style.css">
+<style>.counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; } .counts .card { margin: 0; } .counts b { font-size: 1.4rem; display: block; } td small { display: block; }</style>
+</head>
+<body>
+<main>
+  <nav><a href="/dashboard">Dashboard</a><a href="/admin">Members &amp; roster</a><a href="/locations">Locations</a></nav>
+  <h1>Duty dashboard</h1>
+  <div class="stub">PROTOTYPE: admin access is a STUB shared token, not real authentication.</div>
+  <div class="row">
+    <input type="date" id="date"> <button id="reload">Refresh</button>
+    <span class="muted" id="stamp"></span>
+    <span style="flex:1"></span>
+    <label>Export <input type="date" id="from"> – <input type="date" id="to"></label> <button id="export">CSV</button>
+  </div>
+  <div id="alerts"></div>
+  <div class="counts" id="counts"></div>
+  <h2>Duties</h2>
+  <p class="muted">"Push" is what the LINE API accepted, not whether the person read it. "Member" is what the person did.</p>
+  <div class="scroll"><table><thead><tr><th>Staff</th><th>Shift</th><th>Member</th><th>Last attempt</th><th>Push</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+  <h2>Anomalies <span class="muted">(review only, nothing is auto-rejected)</span></h2>
+  <div id="anomalies"></div>
+  <h2>Attempts with coordinates <button id="showAttempts">Show</button></h2>
+  <div class="scroll"><table><tbody id="attempts"></tbody></table></div>
+</main>
+<script type="module">
+import { api, bangkokToday, el, hhmm } from "/admin-common.js";
+
+const $ = (id) => document.getElementById(id);
+$("date").value = $("from").value = $("to").value = bangkokToday();
+const PUSH = { QUEUED: "queued", LEASED: "sending", RETRY_WAIT: "retrying", API_ACCEPTED: "LINE API accepted", FAILED: "failed", SUPPRESSED: "not needed", CANCELLED: "cancelled" };
+
+function memberCell(d) {
+  if (d.status === "CHECKED_IN") {
+    return el("td", { class: d.late ? "warn" : "ok" }, `${d.late ? "late" : "on time"} ${hhmm(d.checkedInAt)}`,
+      d.source === "override" ? el("small", { class: "muted" }, `override: ${d.overrideNote}`) : "");
+  }
+  return el("td", { class: d.status === "MISSED" ? "bad" : "muted" }, d.status === "MISSED" ? "missed" : "pending");
+}
+
+function pushCell(p) {
+  return el("td", {}, ...["REMINDER", "PROMPT", "MISSED"].map((k) => {
+    const x = p[k];
+    if (!x) return "";
+    const cls = x.status === "FAILED" ? "bad" : x.status === "API_ACCEPTED" ? "ok" : "muted";
+    return el("small", { class: cls, title: x.error ?? "" }, `${k.toLowerCase()}: ${PUSH[x.status] ?? x.status}${x.acceptedAt ? " " + hhmm(x.acceptedAt) : ""}${x.status === "FAILED" && x.error ? ` (${x.error})` : ""}`);
+  }));
+}
+
+async function load() {
+  const r = await api("GET", `/admin/api/today?date=${$("date").value}`);
+  if (!r.ok) { $("alerts").replaceChildren(el("p", { class: "bad" }, r.data.error ?? "error")); return; }
+  const t = r.data;
+  $("stamp").textContent = `as of ${hhmm(t.serverNow)}`;
+  $("alerts").replaceChildren(
+    ...(t.rosterKnown ? [] : [el("div", { class: "card bad" }, `No roster loaded for ${t.date}: status UNKNOWN (not a day off).`)]),
+    ...t.alerts.map((a) => el("div", { class: `card ${a.level === "high" ? "bad" : "warn"}` }, `${a.code}: ${a.detail}`)));
+  const c = t.counts;
+  $("counts").replaceChildren(...[["Duties", c.total], ["Checked in", c.checkedIn, "ok"], ["Late", c.late, "warn"], ["Pending", c.pending], ["Missed", c.missed, "bad"], ["Rejected attempts", c.rejectedAttempts, "warn"]]
+    .map(([k, v, cls]) => el("div", { class: "card" }, el("b", { class: cls ?? "" }, v), k)));
+  $("rows").replaceChildren(...t.duties.map((d) => el("tr", {},
+    el("td", {}, `${d.staffCode} ${d.label}`, d.linked ? "" : el("small", { class: "warn" }, "LINE not linked")),
+    el("td", {}, `${d.shift} ${hhmm(d.startAt)}–${hhmm(d.endAt)}`, el("small", { class: "muted" }, d.location)),
+    memberCell(d),
+    el("td", {}, d.lastAttempt
+      ? [el("span", { class: d.lastAttempt.result === "ok" ? "ok" : "bad" }, `${d.lastAttempt.result}${d.lastAttempt.reason ? ` (${d.lastAttempt.reason})` : ""}`),
+         el("small", { class: "muted" }, `${hhmm(d.lastAttempt.at)} · ${d.lastAttempt.distanceM ?? "?"} m · ±${d.lastAttempt.accuracyM ?? "?"} m · ${d.attempts} attempt(s)`)]
+      : el("span", { class: "muted" }, "none")),
+    pushCell(d.push),
+    el("td", {}, d.status === "PENDING" || d.status === "MISSED"
+      ? el("button", { onclick: () => override(d) }, "Override") : ""))));
+  $("anomalies").replaceChildren(...(t.anomalies.length ? t.anomalies.map((a) => el("div", { class: "card warn" }, `${a.kind}: ${a.detail} (member ids ${a.memberIds.join(", ")})`))
+    : [el("p", { class: "muted" }, "None.")]));
+}
+
+async function override(d) {
+  const note = prompt(`Manual check-in for ${d.staffCode} ${d.shift}. Reason (required, audited):`);
+  if (!note) return;
+  const late = confirm("Record as late? (OK = late, Cancel = on time)");
+  const r = await api("POST", `/admin/api/duties/${d.id}/override`, { note, late });
+  if (!r.ok) alert(r.data.error);
+  load();
+}
+
+$("showAttempts").addEventListener("click", async () => {
+  const r = await api("GET", `/admin/api/checkins?date=${$("date").value}`);
+  if (!r.ok) return;
+  $("attempts").replaceChildren(el("tr", {}, ...["Time", "Staff", "Result", "Lat", "Lng", "±m", "Dist m"].map((h) => el("th", {}, h))),
+    ...r.data.attempts.map((a) => el("tr", {}, el("td", {}, hhmm(a.submitted_at)), el("td", {}, a.staff_code ?? "(unknown)"),
+      el("td", {}, `${a.result}${a.reason ? ` (${a.reason})` : ""}`), el("td", {}, a.lat ?? "purged"), el("td", {}, a.lng ?? ""),
+      el("td", {}, a.accuracy_m ?? ""), el("td", {}, a.distance_m ?? ""))));
+});
+
+$("export").addEventListener("click", async () => {
+  const r = await api("GET", `/admin/api/export.csv?from=${$("from").value}&to=${$("to").value}`);
+  if (!r.ok) { alert(r.data.error ?? "export failed"); return; }
+  const a = el("a", { href: URL.createObjectURL(r.data), download: `checkins-${$("from").value}_${$("to").value}.csv` });
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$("date").addEventListener("change", load);
+$("reload").addEventListener("click", load);
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

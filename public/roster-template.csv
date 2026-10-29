@@ -1,0 +1,5 @@
+date,staff_code,location_code,shift,start,end
+2026-03-02,S001,GATE,AM,,
+2026-03-02,S001,GATE,PM,,
+2026-03-02,S002,HALL,EVENT,09:00,11:00
+2026-03-03,,,,,
