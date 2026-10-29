@@ -2,7 +2,7 @@
 
 Source: "Duty Roster LINE Notification System: Spec" DRAFT v0.1. Rules: CLAUDE.md. v1 prototype archived on branch `legacy-v1`.
 Decisions (2026-10-28): stay on Cloudflare Worker + D1; clean-slate rewrite; generic duties, AM/PM = two duties per person per day; the day-before message is a reminder with no ACK.
-Scope (2026-10-29): **5-person prototype** first. Nothing in the code caps the size; the 150-member figures below are design headroom only.
+Scope (2026-10-29): **5-person prototype, 10 duty days** first (OA quota 300/month; this needs 150–250). Nothing in the code caps the size; the 150-member figures below are design headroom only.
 
 ## Phases
 - [x] 0. Archive v1 (`legacy-v1`), orphan `main`, schema, config, Clock, time helpers
@@ -10,7 +10,7 @@ Scope (2026-10-29): **5-person prototype** first. Nothing in the code caps the s
 - [x] 2. Scheduler + outbox against FakeLineClient
 - [x] 3. LIFF check-in + server-side verification
 - [x] 4. Admin: dashboard, overrides, anomalies, CSV export, location map picker, retention purge
-- [~] 5. Live: D1 reset + v2 deployed, synthetic data seeded. **Real LINE smoke test still blocked** on an OA + LIFF channel (open question 7)
+- [~] 5. Live with real LINE credentials (OA "SK Roll Call"); webhook signature and ID-token verify confirmed. **Real-phone smoke test still to do**
 - [ ] 6. Pilot support: per-location distance/accuracy report for tuning radii
 
 ## Layout
@@ -41,8 +41,8 @@ All values live in `src/config.ts`; all are unconfirmed defaults.
 - Fake LINE client is used only when `LINE_CLIENT=fake`. Without real credentials the live Worker plans and sweeps but sends nothing, and `/api/*` answers 503.
 - LIFF SDK 2.24.0 is pinned by URL but has no SRI hash: LINE's CDN sends no CORS header, so `integrity` would block it. Leaflet 1.9.4 has SRI.
 
-## Tests (89, `npm test`)
-schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 3.
+## Tests (90, `npm test`)
+schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 4.
 Spec 12 acceptance criteria → `test/checkin.test.ts` "AC1"–"AC3", `test/scheduler.test.ts` "never twice, even after a restart" (AC4), `test/admin.test.ts` "AC5".
 
 ## Performance
@@ -53,16 +53,19 @@ Spec 12 acceptance criteria → `test/checkin.test.ts` "AC1"–"AC3", `test/sche
 - https://<worker>.<subdomain>.workers.dev, D1 `sk-duty-notify` (id in `deploy/cloudflare.config.ts`), cron every minute, rate-limit binding `CHECKIN_IP_LIMIT`.
 - 2026-10-29: live D1 reset (all v1 tables dropped, incl. `d1_migrations`), v2 `0001_init.sql` applied, version `25f92da5` deployed.
 - Deploy: copy `src/ migrations/ public/ package.json tsconfig.json` + `deploy/*.ts` into a clean dir; inside it make `node_modules/` with symlinks to each repo package plus the global `cf` package; then `cf deploy --secrets-file <json>` (secrets file only in the scratchpad, deleted after).
-- Secrets set: `ADMIN_TOKEN` only (local copy in gitignored `.admin-token`). NOT set: `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_LOGIN_CHANNEL_ID`, `LIFF_ID`, `LINE_CLIENT`, `ALLOW_TEST_CLOCK`.
-- Synthetic seed: S001–S030 "Person N" (none linked), location GATE at a synthetic point (13.75, 100.5, r 100 m), duties S001–S010 AM+PM on 2026-10-30, S011–S020 on 10-31, explicit no-duty 11-01. Today (10-29) is deliberately UNKNOWN.
+- 2026-10-29: synthetic seed cleared (live DB empty); LINE secrets set; version `5f088245` deployed.
+- Secrets set: `ADMIN_TOKEN` (local copy in gitignored `.admin-token`), `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_LOGIN_CHANNEL_ID`, `LIFF_ID` (local source: gitignored `.env`). NOT set (dev only): `LINE_CLIENT`, `ALLOW_TEST_CLOCK`.
+- Verified live: LINE webhook test 200 (channel secret correct), `/api/liff-config` returns the LIFF id, a forged ID token gets 401 via LINE's real verify endpoint, unsigned webhook 401. Pushes not yet exercised (no members).
+- OA: quota type limited, 300 messages/month, chat mode on (turn off OA Manager greeting/auto-response to avoid double replies).
+- Bug found on first live run and fixed: `HttpLineClient` called the native fetch as `this.fetchFn(...)` ("Illegal invocation" in Workers); now wrapped. Regression test mimics the native `this` check.
 
 ## Phase 5 checklist (needs you)
-1. LINE Developers: one provider with a Messaging API channel (the OA) and a LINE Login channel; LIFF app on the Login channel, size Full, endpoint `https://<worker>.<subdomain>.workers.dev/liff`, scope `openid profile`.
-2. OA webhook URL `https://<worker>.<subdomain>.workers.dev/webhook/line`; auto-reply off.
-3. Secrets: `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_LOGIN_CHANNEL_ID`; var `LIFF_ID`. Redeploy.
+1. ~~LINE Developers: one provider with a Messaging API channel (the OA) and a LINE Login channel; LIFF app on the Login channel, size Full, endpoint `https://<worker>.<subdomain>.workers.dev/liff`, scope `openid profile`.~~ done
+2. ~~OA webhook URL~~ done; auto-reply/greeting off in OA Manager: confirm.
+3. ~~Secrets + redeploy~~ done 2026-10-29. The 5 people must be testers on the Login channel while it is Developing.
 4. Smoke: link two test phones (iOS + Android), one duty starting in ~20 min, check in inside/outside the geofence, low accuracy indoors, location permission off.
 5. Check the OA plan's monthly quota. 5 people on AM+PM: 5 reminders + 10 prompts + up to 10 missed = 15–25 pushes per duty day (~330–550/month at 22 duty days). Replies to webhook events are free; pushes count.
-6. Before adding the 5 real members: clear the synthetic seed (S001–S030, GATE, the 10-30/10-31 duties).
+6. ~~Clear the synthetic seed~~ done 2026-10-29.
 
 ## Still open (spec 13)
 1 roster source · 2 real coordinates / indoor sites · 3 window rules · 4 miss alerts to admin (now: dashboard only) · 5 swaps (now: re-import or override) · 6 OA quota · 7 channel ownership · 8 retention + consent wording · 10 admin auth.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { HttpLineClient } from "../src/line-http";
 
 const client = (status: number, headers: Record<string, string> = {}, body = "{}") =>
@@ -28,5 +28,21 @@ describe("HttpLineClient status mapping", () => {
     expect((await client(200, {}, JSON.stringify({ sub: "U1", aud: "999" })).verifyIdToken("t")).ok).toBe(false);
     expect((await client(400).verifyIdToken("t")).ok).toBe(false);
     await expect(client(503).verifyIdToken("t")).rejects.toThrow();
+  });
+});
+
+describe("HttpLineClient default fetch", () => {
+  const real = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = real; });
+
+  it("calls the global fetch unbound (native fetch throws Illegal invocation otherwise)", async () => {
+    // Mimic workerd's native fetch, which refuses any `this` other than the global object.
+    globalThis.fetch = function (this: unknown) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(new Response(JSON.stringify({ sub: "U1", aud: "1234" })));
+    } as typeof fetch;
+    const c = new HttpLineClient("tok", "1234");
+    expect(await c.verifyIdToken("t")).toEqual({ ok: true, userId: "U1" });
+    expect((await push(c)).kind).toBe("accepted");
   });
 });

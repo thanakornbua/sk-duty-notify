@@ -5,7 +5,10 @@ const API = "https://api.line.me";
 
 /** Real LINE client. Only used when the access token and LINE Login channel id are configured. */
 export class HttpLineClient implements LineClient {
-  constructor(private accessToken: string, private loginChannelId: string, private fetchFn: typeof fetch = fetch) {}
+  // The default must call the global fetch unbound: in Workers, `this.fetchFn(...)` on the native fetch throws
+  // "Illegal invocation".
+  constructor(private accessToken: string, private loginChannelId: string,
+              private fetchFn: typeof fetch = (input, init) => fetch(input, init)) {}
 
   async push(req: PushRequest): Promise<PushResult> {
     let res: Response;

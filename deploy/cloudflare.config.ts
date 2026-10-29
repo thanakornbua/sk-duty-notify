@@ -18,6 +18,12 @@ export default defineConfig({
 			// Same limiter as wrangler.jsonc: per-IP on /api/*, before any LINE call.
 			CHECKIN_IP_LIMIT: bindings.rateLimit({ namespace: "1001", simple: { limit: 120, period: 60 } }),
 			ADMIN_TOKEN: bindings.secret(),
+			// Messaging API channel (the OA): webhook signature + pushes.
+			LINE_CHANNEL_SECRET: bindings.secret(),
+			LINE_CHANNEL_ACCESS_TOKEN: bindings.secret(),
+			// LINE Login channel holding the LIFF app (same provider): ID token audience.
+			LINE_LOGIN_CHANNEL_ID: bindings.secret(),
+			LIFF_ID: bindings.secret(),
 		},
 	},
 });
