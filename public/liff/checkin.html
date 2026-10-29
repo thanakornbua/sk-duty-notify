@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Duty check-in</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -12,12 +12,12 @@
 <script src="https://static.line-scdn.net/liff/edge/versions/2.24.0/sdk.js"></script>
 </head>
 <body>
-<main class="page page--bare page--narrow">
-  <img class="brand-hero" src="/brand/emblem-192.png" alt="School emblem" width="64" height="64">
-  <p class="helper" id="who">SK Duty</p>
-  <h1 class="h1">Duty check-in</h1>
+<main class="page page--bare page--narrow" id="main">
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" id="who" data-i18n="app.name"></p>
+  <h1 class="h1" data-i18n="liff.checkin.title"></h1>
   <div id="consent" class="cds--tile stack" hidden>
-    <h2 class="h3">Location notice</h2>
+    <h2 class="h3" data-i18n="liff.consent.title"></h2>
     <p class="body" id="consentText"></p>
     <div id="acceptSlot"></div>
   </div>
@@ -29,45 +29,34 @@
   <div id="msg" style="margin-top:1rem"></div>
   <div id="refreshSlot"></div>
 </main>
+<main class="page page--bare page--narrow" id="done" hidden></main>
 <script type="module">
 import { button, el, tag } from "/admin-common.js";
-import { $, api, hhmm, initLiff, show } from "./liff.js";
+import { has, lang, t } from "/i18n.js";
+import { $, api, hhmm, initLiff, setupPage, show } from "./liff.js";
 
-const REASONS = {
-  too_early: ["Not open yet", "Check-in for this duty has not opened."],
-  too_late: ["Closed", "The check-in window for this duty has closed."],
-  nonce_used: ["Try again", "This attempt was already used."],
-  nonce_expired: ["Try again", "The page was open too long."],
-  bad_nonce: ["Try again", ""],
-  not_your_duty: ["Not your duty", "This duty is not assigned to you."],
-  duty_cancelled: ["Cancelled", "This duty was cancelled."],
-  rate_limited: ["Too many attempts", "Wait a few minutes."],
-  no_consent: ["Notice not accepted", "Please accept the location notice first."],
-  bad_coords: ["No usable location", "Your phone did not return a usable location."],
-  line_unavailable: ["LINE unavailable", "Try again in a moment."],
-};
+setupPage();
+document.title = t("liff.checkin.title");
+const reason = (code) => (has(`lr.${code}.t`) ? [t(`lr.${code}.t`), t(`lr.${code}.b`)] : [t("liff.error"), String(code ?? "")]);
 let state = null, skew = 0, timer = null;
-const checkin = button("Check in", { full: true });
+const checkin = button(t("liff.checkIn"), { full: true });
 $("checkinSlot").append(checkin);
-$("acceptSlot").append(button("I understand, continue", { full: true, onclick: async () => { await api("/api/consent"); await load(); } }));
+$("acceptSlot").append(button(t("liff.consent.accept"), { full: true, onclick: async () => { await api("/api/consent"); await load(); } }));
 
 async function load() {
   const { status, data } = await api("/api/checkin/start");
-  if (status === 403 && data.error === "not_linked") {
-    show("msg", "warning", "Not linked yet", "Your LINE account is not linked to a staff member. Open the link page from the OA's welcome message.");
-    return;
-  }
+  if (status === 403 && data.error === "not_linked") { show("msg", "warning", t("liff.notLinked.title"), t("liff.notLinked.body")); return; }
   if (status !== 200) {
-    const [t, s] = REASONS[data.error] ?? ["Error", data.error ?? String(status)];
-    show("msg", "error", t, s);
-    $("refreshSlot").replaceChildren(button("Refresh", { kind: "tertiary", full: true, onclick: () => location.reload() }));
+    const [a, b] = reason(data.error);
+    show("msg", "error", a, b);
+    $("refreshSlot").replaceChildren(button(t("liff.refresh"), { kind: "tertiary", full: true, onclick: () => location.reload() }));
     return;
   }
   state = data;
   skew = data.serverNow - Date.now();
   $("who").textContent = `${data.member.label} · ${data.member.staffCode}`;
   $("consent").hidden = !data.needsConsent;
-  $("consentText").textContent = data.consentText;
+  $("consentText").textContent = data.consentText[lang()] ?? data.consentText.en;
   render();
 }
 
@@ -76,10 +65,10 @@ function render() {
     el("div", { class: "h3" }, `${d.shift} · ${hhmm(d.startAt)}–${hhmm(d.endAt)}`),
     el("p", { class: "body secondary" }, d.location),
     el("div", { style: "margin-top:.5rem" }, d.status === "CHECKED_IN"
-      ? tag(`Checked in ${hhmm(d.checkedInAt)}${d.late ? " · late" : ""}`, d.late ? "magenta" : "green")
-      : d.status === "MISSED" ? tag("Missed", "red")
-      : tag(`Check-in ${hhmm(d.opensAt)}–${hhmm(d.closesAt)}`, "gray"))))
-    : [el("p", { class: "body secondary" }, "No duty today.")]));
+      ? tag(t("liff.checkedIn", { time: hhmm(d.checkedInAt) }) + (d.late ? ` · ${t("liff.late")}` : ""), d.late ? "magenta" : "green")
+      : d.status === "MISSED" ? tag(t("liff.missed"), "red")
+      : tag(t("liff.window", { from: hhmm(d.opensAt), to: hhmm(d.closesAt) }), "gray"))))
+    : [el("p", { class: "body secondary" }, t("liff.noDuty"))]));
   const cur = state.current && state.duties.find((d) => d.id === state.current.dutyId);
   $("action").hidden = !cur || state.needsConsent;
   clearInterval(timer);
@@ -88,10 +77,41 @@ function render() {
     const now = Date.now() + skew;
     const open = now >= cur.opensAt && now <= cur.closesAt;
     checkin.disabled = !open;
-    $("hint").textContent = open ? `${cur.shift} at ${cur.location}. Be on site, outdoors if you can.` : `Check-in opens at ${hhmm(cur.opensAt)}.`;
+    $("hint").textContent = open ? t("liff.onSite", { shift: cur.shift, location: cur.location }) : t("liff.opensAt", { time: hhmm(cur.opensAt) });
   };
   tick();
   timer = setInterval(tick, 5000);
+}
+
+/** Full-page "done" view after a successful (or already recorded) check-in. */
+function done(res) {
+  const d = res.duty;
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("viewBox", "0 0 32 32"); icon.setAttribute("class", "done-icon"); icon.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path"); // Carbon icon: checkmark--filled
+  path.setAttribute("d", "M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2ZM14,21.5908l-5-5L10.5906,15,14,18.4092,21.41,11l1.5957,1.5859Z");
+  icon.append(path);
+  const fact = (k, v) => [el("dt", { class: "body" }, t(k)), el("dd", { class: "body" }, v)];
+  const already = res.reason === "already_checked_in";
+  $("done").replaceChildren(
+    icon,
+    el("h1", { class: "h1", style: "margin-top:0" }, t("liff.done.title")),
+    tag(t(d.late ? "liff.done.late" : "liff.done.onTime"), d.late ? "magenta" : "green"),
+    el("dl", { class: "facts" },
+      ...fact("liff.done.duty", `${d.shift} · ${hhmm(d.startAt)}–${hhmm(d.endAt)}`),
+      ...fact("liff.done.location", d.location),
+      ...fact("liff.done.time", `${hhmm(d.checkedInAt)}${lang() === "th" ? " น." : ""}`),
+      ...(res.distanceM != null && !already ? fact("liff.done.distance", `${Math.round(res.distanceM)} ${lang() === "th" ? "ม." : "m"}`) : [])),
+    el("div", { id: "doneMsg" }),
+    el("div", { class: "stack", style: "margin-top:1.5rem" },
+      button(t("liff.done.close"), { full: true, onclick: () => (liff.isInClient() ? liff.closeWindow() : window.close()) }),
+      button(t("liff.done.duties"), { kind: "tertiary", full: true, onclick: () => { $("done").hidden = true; $("main").hidden = false; load(); } })));
+  $("main").hidden = true;
+  $("done").hidden = false;
+  if (already) show("doneMsg", "info", t("liff.done.already"));
+  else if (res.confirmQueued) show("doneMsg", "success", t("liff.done.message"));
+  scrollTo(0, 0);
 }
 
 const position = () => new Promise((resolve, reject) =>
@@ -99,36 +119,34 @@ const position = () => new Promise((resolve, reject) =>
 
 checkin.addEventListener("click", async () => {
   checkin.disabled = true;
-  show("msg", "info", "Getting your location…");
+  show("msg", "info", t("liff.locating"));
   let pos;
   try {
     pos = await position();
   } catch (e) {
-    show("msg", "error", e.code === 1 ? "Location is off" : "No location",
-      e.code === 1 ? "Allow location for LINE in your phone settings (and turn on Precise Location), then try again."
-        : "Move outdoors or near a window and try again.");
+    if (e.code === 1) show("msg", "error", t("liff.locOff.title"), t("liff.locOff.body"));
+    else show("msg", "error", t("liff.noLoc.title"), t("liff.noLoc.body"));
     checkin.disabled = false;
     return;
   }
-  show("msg", "info", "Checking…");
+  show("msg", "info", t("liff.checking"));
   const { coords } = pos;
   const { data } = await api("/api/checkin/submit", {
     dutyId: state.current.dutyId, nonce: state.current.nonce,
     lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, clientTs: Date.now(),
   });
-  const r = data.result;
+  if (data.result === "ok") { show("msg", null); done(data); return; }
   await load(); // fresh nonce for the next try, fresh status
-  if (r === "ok") show("msg", "success", data.reason === "already_checked_in" ? "Already checked in" : `Checked in${data.duty?.late ? " (late)" : ""}`);
-  else if (r === "outside_geofence") show("msg", "error", "Too far from the duty point", `About ${Math.round(data.distanceM)} m away; allowed ${data.radiusM} m. Move closer and try again.`);
-  else if (r === "low_accuracy") show("msg", "error", "Location not precise enough", `±${Math.round(coords.accuracy)} m; need ±${data.allowedAccuracyM} m. Go outdoors, turn on Precise Location, and try again.`);
-  else { const [t, s] = REASONS[data.reason] ?? ["Not accepted", data.reason ?? r]; show("msg", "error", t, s); }
-  if (r !== "ok") checkin.textContent = "Try again";
+  if (data.result === "outside_geofence") show("msg", "error", t("liff.far.title"), t("liff.far.body", { dist: Math.round(data.distanceM), radius: data.radiusM }));
+  else if (data.result === "low_accuracy") show("msg", "error", t("liff.imprecise.title"), t("liff.imprecise.body", { acc: Math.round(coords.accuracy), need: data.allowedAccuracyM }));
+  else { const [a, b] = reason(data.reason ?? data.error); show("msg", "error", a, b); }
+  checkin.textContent = t("liff.tryAgain");
 });
 
 try {
   if (await initLiff()) await load();
 } catch (e) {
-  show("msg", "error", "Could not start", e.message);
+  show("msg", "error", t("liff.couldNotStart"), e.message);
 }
 </script>
 </body>

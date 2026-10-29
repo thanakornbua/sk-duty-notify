@@ -9,7 +9,8 @@ TypeScript, one Cloudflare Worker + D1 (HTTP API, static assets in `public/`, `s
 
 ## Domain
 - ~150 members; a duty = member + location + Bangkok date + shift (start/end). AM/PM are two duties per person per day.
-- Messages, all individual pushes: REMINDER 16:00 the day before (one per member per day, all of their duties, info only), PROMPT at each duty start (button opens the LIFF check-in page), MISSED at start + 30 min only if still PENDING. Never repeated; never in quiet hours.
+- Messages, all individual pushes: REMINDER 16:00 the day before (one per member per day, all of their duties, info only), PROMPT at each duty start (button opens the LIFF check-in page), MISSED at start + 30 min only if still PENDING, CONFIRM right after a successful check-in or override (setting, default on). Never repeated; REMINDER/PROMPT/MISSED never in quiet hours.
+- Roster comes from a file import or the in-page duty sheet; both go through the same stage/publish importer.
 - Check-in = LIFF page -> ID token + server-issued nonce + browser geolocation. Never the LINE chat "location message".
 - Duty states: PENDING / CHECKED_IN (late flag, source gps|override) / MISSED / CANCELLED. Attempt results: ok / outside_geofence / low_accuracy / outside_window / rejected (+ reason).
 - Roster: long-format CSV/XLSX (one row per duty), parsed in the browser (`public/roster.js`), revalidated on the server. Dates not in any published file are UNKNOWN, never a day off.
@@ -18,7 +19,8 @@ TypeScript, one Cloudflare Worker + D1 (HTTP API, static assets in `public/`, `s
 - Duty dates are Asia/Bangkok calendar dates. Instants are UTC ms. Never derive the duty date from the UTC date.
 - Every time-dependent function takes an injected `Clock`. No `Date.now()` in business logic.
 - LINE sits behind `LineClient` (push, reply, verifyIdToken). `FakeLineClient` has failure injection: timeout, timeout-after-accept, 429, 5xx, 4xx, 409.
-- All tunables and message copy: ONE file, `src/config.ts`.
+- All tunables and message copy: ONE file, `src/config.ts`. The scheduling subset (shift times, reminder time, windows, quiet hours, confirmation, message language) is editable on the Settings page: stored in D1 `settings`, validated in `src/settings.ts`, applied onto `config` at the start of every request and cron run. `config.ts` holds the defaults.
+- Two languages, Thai and English. UI text only via `public/i18n.js` (`t()`, both languages for every key); the server returns error/issue CODES, never sentences. LINE copy per language in `config.messages`.
 - Check-in verification order (spec 8.2): identity (ID token verified with LINE, never a client-sent user id) -> assignment -> time window on the SERVER clock -> nonce (single use, consumed atomically) -> accuracy -> geofence (inside ANY point). Store every attempt.
 - Keep "LINE API accepted" separate from "member acted". Never name a state "delivered".
 - Raw coordinates only in admin endpoints; purged after `config.locationRetentionDays`.

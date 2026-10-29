@@ -3,9 +3,17 @@
 [hidden] { display: none !important; } /* Carbon components set display, which would override the attribute */
 html, body { background: var(--cds-background); color: var(--cds-text-primary); }
 body { margin: 0; font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+/* Thai: Plex Sans has no Thai glyphs, so name Plex Sans Thai Looped (shipped with Carbon) right after it, everywhere
+   Carbon sets its own font. Thai needs a little more line height for stacked vowels and tone marks. */
+html[lang="th"] body, html[lang="th"] body :where(button, input, select, textarea, .cds--btn, .cds--label, .cds--tag, .cds--header__menu-item) {
+  font-family: "IBM Plex Sans", "IBM Plex Sans Thai Looped", system-ui, sans-serif;
+}
+html[lang="th"] .body, html[lang="th"] .helper, html[lang="th"] td { line-height: 1.5; }
+.lang-corner { position: absolute; top: .75rem; right: 1rem; }
 .page { max-width: 80rem; margin: 0 auto; padding: 4rem 1rem 4rem; }
 .page.page--bare { padding-top: 2rem; } /* pages without the shell header (login, LIFF); beats the phone rule below */
 .nowrap { white-space: nowrap; }
+.cds--tag + .cds--tag { margin-left: .25rem; }
 .brand-mark { width: 1.75rem; height: 1.75rem; margin-right: .5rem; }
 .brand-hero { display: block; width: 4rem; height: 4rem; margin-bottom: .75rem; }
 .page--narrow { max-width: 30rem; }
@@ -36,6 +44,13 @@ body { margin: 0; font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe
 .table-scroll .cds--data-table { min-width: 40rem; } /* scroll sideways on phones instead of squeezing columns */
 .cds--text-area { width: 100%; }
 td .helper { display: block; }
+.sheet td, .sheet th { white-space: nowrap; }
+.sheet th:first-child, .sheet td:first-child { position: sticky; left: 0; background: var(--cds-layer-01); z-index: 1; }
+.sheet .cell { display: flex; flex-direction: column; gap: .25rem; min-width: 5rem; }
+.sheet .cds--checkbox-label { min-height: 1.25rem; }
+.done-icon { width: 4rem; height: 4rem; fill: var(--cds-support-success); display: block; margin-bottom: 1rem; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: .5rem 1rem; margin: 1rem 0 1.5rem; }
+.facts dt { color: var(--cds-text-secondary); } .facts dd { margin: 0; }
 .code-big { font-family: "IBM Plex Mono", monospace; font-size: 2rem; letter-spacing: .3em; margin: .5rem 0; }
 #map { height: 26rem; border: 1px solid var(--cds-border-subtle-01); }
 /* Carbon hides header nav below 66rem; repeat it under the header on small screens. */

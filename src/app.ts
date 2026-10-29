@@ -5,17 +5,20 @@ import type { Env } from "./index";
 import type { LineClient } from "./line";
 import { FakeLineClient } from "./line-fake";
 import { linkWithCode } from "./linking";
-import { runScheduler } from "./scheduler";
+import { runScheduler, sendNow } from "./scheduler";
 import { json, readJson, sha256Hex } from "./util";
 import { handleWebhook } from "./webhook";
 
-export async function handleRequest(req: Request, env: Env, clock: Clock, line?: LineClient): Promise<Response> {
+/** `waitUntil` runs work after the response (the Worker's ctx.waitUntil); tests may omit it. */
+export type WaitUntil = (p: Promise<unknown>) => void;
+
+export async function handleRequest(req: Request, env: Env, clock: Clock, line?: LineClient, waitUntil?: WaitUntil): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
   if (req.method === "POST" && path === "/webhook/line") return handleWebhook(req, env, clock, line);
-  if (path.startsWith("/api/")) return handleMemberApi(req, env, clock, line, path);
-  if (path.startsWith("/admin/api/")) return handleAdmin(req, env, clock, path, url, await ipHashOf(req));
+  if (path.startsWith("/api/")) return handleMemberApi(req, env, clock, line, path, waitUntil);
+  if (path.startsWith("/admin/api/")) return handleAdmin(req, env, clock, path, url, await ipHashOf(req), line, waitUntil);
 
   // Dev/perf only: needs ALLOW_TEST_CLOCK=1 AND the admin token. Absent from any real deployment.
   if (path.startsWith("/dev/")) {
@@ -31,13 +34,19 @@ export async function handleRequest(req: Request, env: Env, clock: Clock, line?:
   return env.ASSETS ? env.ASSETS.fetch(req) : new Response("not found", { status: 404 });
 }
 
+/** Push the check-in confirmation right after the response; the scheduler retries it if this attempt fails. */
+export function sendConfirm(env: Env, clock: Clock, line: LineClient | undefined, key: string, waitUntil?: WaitUntil) {
+  if (!line || !env.LIFF_ID || !waitUntil) return;
+  waitUntil(sendNow({ db: env.DB, clock, line, liffId: env.LIFF_ID }, key).catch((e) => console.error("confirm send failed", e)));
+}
+
 async function ipHashOf(req: Request): Promise<string | null> {
   const ip = req.headers.get("cf-connecting-ip");
   return ip ? (await sha256Hex(`ip:${ip}`)).slice(0, 16) : null;
 }
 
 /** Endpoints called from the LIFF pages. Identity always comes from a LINE-verified ID token. */
-async function handleMemberApi(req: Request, env: Env, clock: Clock, line: LineClient | undefined, path: string): Promise<Response> {
+async function handleMemberApi(req: Request, env: Env, clock: Clock, line: LineClient | undefined, path: string, waitUntil?: WaitUntil): Promise<Response> {
   if (req.method === "GET" && path === "/api/liff-config") {
     return env.LIFF_ID ? json({ liffId: env.LIFF_ID }) : json({ error: "LIFF not configured" }, 503);
   }
@@ -80,8 +89,9 @@ async function handleMemberApi(req: Request, env: Env, clock: Clock, line: LineC
     case "/api/consent": await recordConsent(env.DB, clock, who.member); return json({ ok: true });
     case "/api/checkin/submit": {
       const out = await submitCheckin(env.DB, clock, who.member, body, meta);
-      const { status, ...rest } = out;
-      return json(rest, status);
+      const { status, confirmKey, ...rest } = out;
+      if (confirmKey) sendConfirm(env, clock, line, confirmKey, waitUntil);
+      return json({ ...rest, confirmQueued: !!confirmKey }, status);
     }
   }
   return json({ error: "not found" }, 404);

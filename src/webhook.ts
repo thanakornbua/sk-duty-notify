@@ -53,8 +53,8 @@ export async function handleWebhook(req: Request, env: Env, clock: Clock, line?:
     const privateChat = ev.source?.type === "user";
     const reply =
       !privateChat ? undefined
-      : ev.type === "follow" ? config.messages.followReply(liffUrl(env.LIFF_ID ?? "LIFF_ID_NOT_SET", "link"))
-      : ev.type === "message" ? config.messages.help(liffUrl(env.LIFF_ID ?? "LIFF_ID_NOT_SET"))
+      : ev.type === "follow" ? config.messages[config.messageLanguage].followReply(liffUrl(env.LIFF_ID ?? "LIFF_ID_NOT_SET", "link"))
+      : ev.type === "message" ? config.messages[config.messageLanguage].help(liffUrl(env.LIFF_ID ?? "LIFF_ID_NOT_SET"))
       : undefined;
     try {
       const r = await env.DB.prepare(

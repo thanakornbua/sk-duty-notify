@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Link account</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -13,47 +13,45 @@
 </head>
 <body>
 <main class="page page--bare page--narrow">
-  <img class="brand-hero" src="/brand/emblem-192.png" alt="School emblem" width="64" height="64">
-  <p class="helper">SK Duty</p>
-  <h1 class="h1">Link your LINE account</h1>
-  <p class="body secondary">Enter the one-time code from your duty coordinator. It works once and expires after 15 minutes.</p>
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" data-i18n="app.name"></p>
+  <h1 class="h1" data-i18n="liff.link.title"></h1>
+  <p class="body secondary" data-i18n="liff.link.intro"></p>
   <form id="form" class="stack" style="margin-top:1.5rem" novalidate></form>
   <div id="msg" style="margin-top:1rem"></div>
 </main>
 <script type="module">
 import { button, textInput } from "/admin-common.js";
-import { $, api, initLiff, show } from "./liff.js";
+import { has, t } from "/i18n.js";
+import { $, api, initLiff, setupPage, show } from "./liff.js";
 
-const MESSAGES = {
-  bad_code: ["Code not valid", "It may have expired or been used already. Ask your coordinator for a new one."],
-  line_account_linked_elsewhere: ["Already linked", "This LINE account is linked to another staff member. Contact your coordinator."],
-  rate_limited: ["Too many tries", "Wait a minute and try again."],
-  line_unavailable: ["LINE unavailable", "Try again in a moment."],
-};
-const code = textInput({ id: "code", label: "Code", autocomplete: "one-time-code", autocapitalize: "characters", maxlength: 12, spellcheck: "false" });
+setupPage();
+document.title = t("liff.link.title");
+const code = textInput({ id: "code", label: t("liff.link.code"), autocomplete: "one-time-code", autocapitalize: "characters", maxlength: 12, spellcheck: "false" });
 code.input.classList.add("mono");
-const go = button("Link", { type: "submit", full: true, disabled: true });
+const go = button(t("liff.link.submit"), { type: "submit", full: true, disabled: true });
 $("form").append(code, go);
 
 try {
   if (await initLiff()) go.disabled = false;
 } catch (e) {
-  show("msg", "error", "Could not start", e.message);
+  show("msg", "error", t("liff.couldNotStart"), e.message);
 }
 
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  code.invalid(code.input.value.trim() ? null : "Enter the code.");
+  code.invalid(code.input.value.trim() ? null : t("liff.link.needCode"));
   if (!code.input.value.trim()) return;
   go.disabled = true;
-  show("msg", "info", "Linking…");
+  show("msg", "info", t("liff.link.linking"));
   const { status, data } = await api("/api/link", { code: code.input.value });
   if (status === 200) {
     $("form").hidden = true;
-    show("msg", "success", `Linked as ${data.label}`, `Staff code ${data.staffCode}. Duty notices will arrive in this chat.`);
+    show("msg", "success", t("liff.link.done.title", { name: data.label }), t("liff.link.done.body", { code: data.staffCode }));
   } else {
-    const [t, s] = MESSAGES[data.error] ?? ["Could not link", data.error ?? String(status)];
-    show("msg", "error", t, s);
+    const k = `lr.${data.error}`;
+    if (has(`${k}.t`)) show("msg", "error", t(`${k}.t`), t(`${k}.b`));
+    else show("msg", "error", t("liff.error"), String(data.error ?? status));
     go.disabled = false;
   }
 });

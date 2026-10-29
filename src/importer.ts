@@ -20,7 +20,9 @@ export interface RosterRow {
 
 interface Resolved { memberId: number; locationId: number; date: string; shift: string; startAt: number; endAt: number; label: string }
 
-export type Result<T> = { ok: true; value: T } | { ok: false; errors: string[]; status?: number };
+/** A validation problem or warning. `code` is translated by the UI; the other fields fill its message. */
+export type Issue = { code: string; row?: number; date?: string; value?: string; [k: string]: string | number | undefined };
+export type Result<T> = { ok: true; value: T } | { ok: false; errors: Issue[]; status?: number };
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -41,8 +43,8 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" :
 /** Validate rows against the current members and locations. */
 async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ rows: RosterRow[]; resolved: Resolved[]; dates: string[] }>> {
   const raw = (input as { rows?: unknown })?.rows;
-  if (!Array.isArray(raw) || raw.length === 0) return { ok: false, errors: ["expected {rows: [...]} with at least one row"] };
-  if (raw.length > MAX_ROWS) return { ok: false, errors: [`at most ${MAX_ROWS} rows per import`] };
+  if (!Array.isArray(raw) || raw.length === 0) return { ok: false, errors: [{ code: "rows_required" }] };
+  if (raw.length > MAX_ROWS) return { ok: false, errors: [{ code: "too_many_rows", max: MAX_ROWS }] };
 
   const [members, locations] = await Promise.all([
     db.prepare("SELECT id, staff_code, active FROM members").all<{ id: number; staff_code: string; active: number }>(),
@@ -52,7 +54,7 @@ async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ row
   const memberBy = new Map(members.results.map((m) => [m.staff_code, m]));
   const locationBy = new Map(locations.results.map((l) => [l.code, l]));
 
-  const errors: string[] = [];
+  const errors: Issue[] = [];
   const rows: RosterRow[] = [];
   const resolved: Resolved[] = [];
   const markers = new Set<string>(), withDuty = new Set<string>(), keys = new Set<string>();
@@ -60,39 +62,38 @@ async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ row
 
   raw.forEach((r: Record<string, unknown>, i) => {
     const line = Number.isInteger(r?.line) ? (r.line as number) : i + 1;
-    const at = `row ${line}`;
     const row: RosterRow = {
       date: str(r?.date), staffCode: str(r?.staffCode), locationCode: str(r?.locationCode), shift: str(r?.shift).toUpperCase(),
       start: str(r?.start) || undefined, end: str(r?.end) || undefined, line,
     };
-    if (!validDate(row.date)) { errors.push(`${at}: invalid date "${row.date}" (expected YYYY-MM-DD)`); return; }
+    if (!validDate(row.date)) { errors.push({ code: "invalid_date", row: line, value: row.date }); return; }
     dates.add(row.date);
     rows.push(row);
 
     if (!row.staffCode) {
-      if (row.locationCode || row.shift) errors.push(`${at}: a no-duty row must leave staff, location and shift empty`);
+      if (row.locationCode || row.shift) errors.push({ code: "no_duty_row_not_empty", row: line });
       markers.add(row.date);
       return;
     }
     withDuty.add(row.date);
 
     const member = memberBy.get(row.staffCode);
-    if (!member) errors.push(`${at}: unknown staff code "${row.staffCode}"`);
-    else if (!member.active) errors.push(`${at}: staff code "${row.staffCode}" is inactive`);
+    if (!member) errors.push({ code: "unknown_staff", row: line, value: row.staffCode });
+    else if (!member.active) errors.push({ code: "inactive_staff", row: line, value: row.staffCode });
     const loc = locationBy.get(row.locationCode);
-    if (!loc) errors.push(`${at}: unknown location "${row.locationCode}"`);
-    else if (!loc.active) errors.push(`${at}: location "${row.locationCode}" is inactive`);
-    else if (!loc.points) errors.push(`${at}: location "${row.locationCode}" has no geofence point yet`);
+    if (!loc) errors.push({ code: "unknown_location", row: line, value: row.locationCode });
+    else if (!loc.active) errors.push({ code: "inactive_location", row: line, value: row.locationCode });
+    else if (!loc.points) errors.push({ code: "location_without_points", row: line, value: row.locationCode });
 
-    if (!SHIFT_RE.test(row.shift)) { errors.push(`${at}: invalid shift "${row.shift}"`); return; }
+    if (!SHIFT_RE.test(row.shift)) { errors.push({ code: "invalid_shift", row: line, value: row.shift }); return; }
     const preset = config.shifts[row.shift];
     const start = row.start ?? preset?.start, end = row.end ?? preset?.end;
-    if (!start || !end) { errors.push(`${at}: shift "${row.shift}" is not predefined, so start and end are required`); return; }
-    if (!TIME_RE.test(start) || !TIME_RE.test(end)) { errors.push(`${at}: times must be HH:MM`); return; }
-    if (end <= start) { errors.push(`${at}: end ${end} must be after start ${start} (overnight shifts are not supported)`); return; }
+    if (!start || !end) { errors.push({ code: "shift_needs_times", row: line, value: row.shift }); return; }
+    if (!TIME_RE.test(start) || !TIME_RE.test(end)) { errors.push({ code: "invalid_time", row: line }); return; }
+    if (end <= start) { errors.push({ code: "end_before_start", row: line, start, end }); return; }
 
     const key = `${row.staffCode}|${row.date}|${row.shift}`;
-    if (keys.has(key)) errors.push(`${at}: ${row.staffCode} already has shift ${row.shift} on ${row.date}`);
+    if (keys.has(key)) errors.push({ code: "duplicate_shift", row: line, value: row.staffCode, shift: row.shift, date: row.date });
     keys.add(key);
     if (member && loc) {
       resolved.push({
@@ -102,7 +103,7 @@ async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ row
     }
   });
 
-  for (const d of markers) if (withDuty.has(d)) errors.push(`${d}: has both a no-duty row and duty rows`);
+  for (const d of markers) if (withDuty.has(d)) errors.push({ code: "mixed_no_duty", date: d });
   // The same member must not be in two places at once.
   const byMemberDate = new Map<string, Resolved[]>();
   for (const r of resolved) {
@@ -112,7 +113,7 @@ async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ row
   for (const list of byMemberDate.values()) {
     list.sort((a, b) => a.startAt - b.startAt);
     for (let i = 1; i < list.length; i++) {
-      if (list[i].startAt < list[i - 1].endAt) errors.push(`${list[i].date}: ${list[i - 1].label} overlaps ${list[i].label}`);
+      if (list[i].startAt < list[i - 1].endAt) errors.push({ code: "overlap", date: list[i].date, a: list[i - 1].label, b: list[i].label });
     }
   }
   if (errors.length) return { ok: false, errors: errors.slice(0, 200) };
@@ -126,7 +127,7 @@ export interface ImportPlan {
   insert: Resolved[];
   cancel: number[];
   keep: number;
-  warnings: string[];
+  warnings: Issue[];
 }
 
 /**
@@ -150,14 +151,14 @@ async function planImport(db: D1Database, resolved: Resolved[], dates: string[])
     if (!e) plan.insert.push(r);
     else if (e.status !== "PENDING") {
       plan.keep++;
-      if (!same) plan.warnings.push(`${r.date} ${r.label}: already ${e.status}, change ignored`);
+      if (!same) plan.warnings.push({ code: "resolved_change_ignored", date: r.date, value: r.label, status: e.status });
     } else if (same) plan.keep++;
     else { plan.cancel.push(e.id); plan.insert.push(r); }
   }
   for (const [key, e] of byKey) {
     if (wanted.has(key)) continue;
     if (e.status === "PENDING") plan.cancel.push(e.id);
-    else plan.warnings.push(`${e.duty_date} duty #${e.id} (${e.shift}) is ${e.status} and not in the file; kept`);
+    else plan.warnings.push({ code: "resolved_kept", date: e.duty_date, value: `#${e.id} ${e.shift}`, status: e.status });
   }
   return plan;
 }
@@ -181,8 +182,8 @@ export async function stageImport(db: D1Database, clock: Clock, body: unknown) {
 export async function publishImport(db: D1Database, clock: Clock, batchId: number, actor = "admin"): Promise<Result<ReturnType<typeof summary>>> {
   const batch = await db.prepare("SELECT status, rows_json FROM import_batches WHERE id = ?").bind(batchId)
     .first<{ status: string; rows_json: string }>();
-  if (!batch) return { ok: false, errors: ["unknown batch"], status: 404 };
-  if (batch.status !== "STAGED") return { ok: false, errors: [`batch is ${batch.status}`], status: 409 };
+  if (!batch) return { ok: false, errors: [{ code: "unknown_batch" }], status: 404 };
+  if (batch.status !== "STAGED") return { ok: false, errors: [{ code: "batch_not_staged", status: batch.status }], status: 409 };
 
   // Members or locations may have changed since staging.
   const res = await resolveRows(db, { rows: JSON.parse(batch.rows_json) });

@@ -4,6 +4,7 @@ import type { LineClient } from "./line";
 import { FakeLineClient } from "./line-fake";
 import { HttpLineClient } from "./line-http";
 import { runScheduler } from "./scheduler";
+import { loadSchedule } from "./settings";
 
 export interface Env {
   DB: D1Database;
@@ -36,12 +37,14 @@ export function lineClientFor(env: Env): LineClient | undefined {
 }
 
 export default {
-  fetch(req, env) {
+  async fetch(req, env, ctx) {
     const override = env.ALLOW_TEST_CLOCK === "1" ? Number(req.headers.get("x-test-now")) : NaN;
     const clock = Number.isFinite(override) && override > 0 ? new FixedClock(override) : systemClock;
-    return handleRequest(req, env, clock, lineClientFor(env));
+    if (new URL(req.url).pathname.match(/^\/(api|admin\/api|webhook|dev)\//)) await loadSchedule(env.DB);
+    return handleRequest(req, env, clock, lineClientFor(env), (p) => ctx.waitUntil(p));
   },
   async scheduled(_event, env): Promise<void> {
+    await loadSchedule(env.DB);
     await runScheduler({ db: env.DB, clock: systemClock, line: lineClientFor(env), liffId: env.LIFF_ID });
   },
 } satisfies ExportedHandler<Env>;

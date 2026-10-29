@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
 <title>SK Duty</title>
 <meta charset="utf-8">
@@ -17,13 +17,15 @@
   liff.init() then forwards to /liff/link. Without a liff.state it opens the check-in page.
 -->
 <main class="page page--bare page--narrow">
-  <img class="brand-hero" src="/brand/emblem-192.png" alt="School emblem" width="64" height="64">
-  <p class="helper">SK Duty</p>
-  <div id="msg" class="body secondary" style="margin-top:1rem">Opening…</div>
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" data-i18n="app.name"></p>
+  <div id="msg" class="body secondary" style="margin-top:1rem" data-i18n="liff.opening"></div>
 </main>
 <script type="module">
 import { notification } from "/admin-common.js";
+import { applyStatic, t } from "/i18n.js";
 
+applyStatic();
 const msg = document.getElementById("msg");
 try {
   const { liffId } = await fetch("/api/liff-config").then((r) => r.json());
@@ -32,7 +34,7 @@ try {
   await liff.init({ liffId }); // follows liff.state to the requested page
   if (!forwarding) location.replace("/liff/checkin");
 } catch (e) {
-  msg.replaceChildren(notification("error", "Could not open", e.message));
+  msg.replaceChildren(notification("error", t("liff.couldNotStart"), e.message));
 }
 </script>
 </body>

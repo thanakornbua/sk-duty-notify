@@ -1,12 +1,24 @@
-import { changePassword, clearCookie, currentAdmin, login, logout, sessionCookie, type AdminUser } from "./auth";
+import type { WaitUntil } from "./app";
+import { sendConfirm } from "./app";
+import {
+  changePassword, clearCookie, createAdmin, currentAdmin, listAdmins, login, logout, resetAdminPassword, sessionCookie,
+  setAdminDisabled, type AdminUser,
+} from "./auth";
+import { confirmKey, queueConfirm } from "./checkin";
 import type { Clock } from "./clock";
 import { config } from "./config";
 import type { Env } from "./index";
 import { publishImport, stageImport } from "./importer";
+import type { LineClient } from "./line";
 import { issueLinkCode } from "./linking";
 import { attemptsFor, buildToday, exportCsv } from "./report";
-import { bangkokDateOf } from "./time";
+import { saveSchedule, scheduleInfo } from "./settings";
+import { addDays, bangkokDateOf, bangkokTimeOf } from "./time";
 import { isStr, json, readJson } from "./util";
+
+/**
+ * Admin API. Errors are codes ({error: "code", ...params}); the pages translate them (EN/TH).
+ */
 
 /** Dev/perf only (/dev/*): the ADMIN_TOKEN bearer. Admin pages and /admin/api use the login session instead. */
 export function devAuthorized(req: Request, env: Env): boolean {
@@ -22,11 +34,15 @@ function sameOrigin(req: Request): boolean {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Staff and location codes. Dots allowed (e.g. "first.la"). */
 const CODE_RE = /^[A-Za-z0-9._-]{1,32}$/;
+/** Longest range the duty sheet loads at once. */
+const SHEET_MAX_DAYS = 31;
 
-export async function handleAdmin(req: Request, env: Env, clock: Clock, path: string, url: URL, ipHash: string | null): Promise<Response> {
+export async function handleAdmin(
+  req: Request, env: Env, clock: Clock, path: string, url: URL, ipHash: string | null, line?: LineClient, waitUntil?: WaitUntil,
+): Promise<Response> {
   const db = env.DB;
   const now = clock.now();
-  if (!sameOrigin(req)) return json({ error: "cross-origin request refused" }, 403);
+  if (!sameOrigin(req)) return json({ error: "cross_origin" }, 403);
 
   if (req.method === "POST" && path === "/admin/api/login") {
     if (env.IP_LIMIT && ipHash && !(await env.IP_LIMIT.limit({ key: `login:${ipHash}` })).success) return json({ error: "rate_limited" }, 429);
@@ -46,7 +62,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
   if (req.method === "POST" && path === "/admin/api/password") {
     const b = await readJson(req);
     const res = await changePassword(db, clock, admin, b?.current, b?.next);
-    return res.ok ? json({ ok: true }) : json({ error: res.error }, 422);
+    return res.ok ? json({ ok: true }) : json({ error: res.error, min: config.auth.minPasswordLength }, 422);
   }
   // A temporary password must be replaced before anything else.
   if (admin.must_change) return json({ error: "must_change_password" }, 403);
@@ -58,6 +74,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
   const id = Number(/\/(\d+)(?:\/|$)/.exec(path)?.[1]);
 
   switch (route) {
+    /* ------------------------------------------------------------- members */
     case "GET /admin/api/members": {
       const { results } = await db.prepare(
         `SELECT id, staff_code, label, grp, active, line_user_id IS NOT NULL AS linked, linked_at, consent_at FROM members ORDER BY staff_code`,
@@ -68,9 +85,9 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       // Upsert [{staffCode, label, group?, active?}]. Synthetic data only in this repo.
       const body = await readJson(req);
       const list = body?.members;
-      if (!Array.isArray(list) || !list.length || list.length > 1000) return json({ error: "expected {members: [...]} (1-1000)" }, 400);
+      if (!Array.isArray(list) || !list.length || list.length > 1000) return json({ error: "members_required" }, 400);
       const bad = list.findIndex((m) => !CODE_RE.test(m?.staffCode ?? "") || !isStr(m?.label, 100));
-      if (bad >= 0) return json({ error: `member ${bad + 1}: staff code (letters, digits, . _ -, max 32) and name (1-100 chars) required` }, 400);
+      if (bad >= 0) return json({ error: "invalid_member", index: bad + 1 }, 400);
       await db.batch([
         ...list.map((m) => db.prepare(
           `INSERT INTO members (staff_code, label, grp, active, created_at) VALUES (?, ?, ?, ?, ?)
@@ -82,7 +99,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
     }
     case "POST /admin/api/members/:id/link-code": {
       const m = await db.prepare("SELECT id FROM members WHERE id = ? AND active = 1").bind(id).first();
-      if (!m) return json({ error: "unknown or inactive member" }, 404);
+      if (!m) return json({ error: "member_not_found" }, 404);
       return json(await issueLinkCode(db, clock, id, actor), 201);
     }
     case "POST /admin/api/members/:id/unlink": {
@@ -93,6 +110,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       return json({ ok: true });
     }
 
+    /* ----------------------------------------------------------- locations */
     case "GET /admin/api/locations": {
       const [locs, pts] = await Promise.all([
         db.prepare("SELECT id, code, name, allowed_accuracy_m, active FROM locations ORDER BY code").all<{ id: number }>(),
@@ -104,20 +122,20 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       });
     }
     case "POST /admin/api/locations": {
-      // Upsert one location by code; `points` replaces all of its geofence points.
+      // Upsert one location by code; `points` replaces its geofence points (old ones are retired, not deleted).
       const b = await readJson(req);
       const [rMin, rMax] = config.radiusRangeM, [aMin, aMax] = config.accuracyRangeM;
       const acc = b?.allowedAccuracyM ?? config.defaultAllowedAccuracyM;
       const points = b?.points;
-      if (!b || !CODE_RE.test(String(b.code ?? "")) || !isStr(b.name, 100)) return json({ error: "code and name required" }, 400);
-      if (typeof acc !== "number" || acc < aMin || acc > aMax) return json({ error: `allowedAccuracyM must be ${aMin}-${aMax}` }, 400);
-      if (!Array.isArray(points) || !points.length || points.length > 20) return json({ error: "1-20 points required" }, 400);
+      if (!b || !CODE_RE.test(String(b.code ?? "")) || !isStr(b.name, 100)) return json({ error: "code_name_required" }, 400);
+      if (typeof acc !== "number" || acc < aMin || acc > aMax) return json({ error: "accuracy_out_of_range", min: aMin, max: aMax }, 400);
+      if (!Array.isArray(points) || !points.length || points.length > 20) return json({ error: "points_required" }, 400);
       for (const p of points) {
         const r = p?.radiusM ?? config.defaultRadiusM;
         if (typeof p?.lat !== "number" || typeof p?.lng !== "number" || Math.abs(p.lat) > 90 || Math.abs(p.lng) > 180) {
-          return json({ error: "each point needs numeric lat (-90..90) and lng (-180..180)" }, 400);
+          return json({ error: "invalid_point" }, 400);
         }
-        if (typeof r !== "number" || r < rMin || r > rMax) return json({ error: `radiusM must be ${rMin}-${rMax}` }, 400);
+        if (typeof r !== "number" || r < rMin || r > rMax) return json({ error: "radius_out_of_range", min: rMin, max: rMax }, 400);
       }
       const loc = await db.prepare(
         `INSERT INTO locations (code, name, allowed_accuracy_m, active) VALUES (?, ?, ?, ?)
@@ -134,6 +152,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       return json({ ok: true, id: loc!.id });
     }
 
+    /* ------------------------------------------------- roster (file + sheet) */
     case "POST /admin/api/imports": {
       const res = await stageImport(db, clock, await req.json().catch(() => null));
       return res.ok ? json(res.value, 201) : json({ errors: res.errors }, 422);
@@ -142,22 +161,47 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       const res = await publishImport(db, clock, id, actor);
       return res.ok ? json(res.value) : json({ errors: res.errors }, res.status ?? 422);
     }
+    case "GET /admin/api/duties": {
+      // Everything the duty sheet needs for a date range. The sheet publishes through /imports like a file.
+      const from = url.searchParams.get("from") ?? "", to = url.searchParams.get("to") ?? "";
+      if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return json({ error: "invalid_range" }, 400);
+      if (to > addDays(from, SHEET_MAX_DAYS - 1)) return json({ error: "range_too_long", max: SHEET_MAX_DAYS }, 400);
+      const [members, locations, duties, known] = await Promise.all([
+        db.prepare("SELECT id, staff_code AS staffCode, label FROM members WHERE active = 1 ORDER BY staff_code").all(),
+        db.prepare(`SELECT code, name FROM locations l WHERE active = 1
+                    AND EXISTS (SELECT 1 FROM geofence_points p WHERE p.location_id = l.id AND p.retired_at IS NULL) ORDER BY code`).all(),
+        db.prepare(`SELECT d.id, m.staff_code, d.duty_date, d.shift, l.code AS location_code, d.start_at, d.end_at, d.status
+                    FROM duties d JOIN members m ON m.id = d.member_id JOIN locations l ON l.id = d.location_id
+                    WHERE d.duty_date BETWEEN ? AND ? AND d.status != 'CANCELLED' ORDER BY d.duty_date, d.start_at`).bind(from, to)
+          .all<{ id: number; staff_code: string; duty_date: string; shift: string; location_code: string; start_at: number; end_at: number; status: string }>(),
+        db.prepare("SELECT duty_date FROM roster_dates WHERE duty_date BETWEEN ? AND ?").bind(from, to).all<{ duty_date: string }>(),
+      ]);
+      return json({
+        from, to, shifts: { AM: config.shifts.AM, PM: config.shifts.PM },
+        members: members.results, locations: locations.results, knownDates: known.results.map((r) => r.duty_date),
+        duties: duties.results.map((d) => ({
+          id: d.id, staffCode: d.staff_code, date: d.duty_date, shift: d.shift, locationCode: d.location_code,
+          start: bangkokTimeOf(d.start_at), end: bangkokTimeOf(d.end_at), status: d.status,
+        })),
+      });
+    }
 
+    /* ------------------------------------------------------- day dashboard */
     case "GET /admin/api/today": {
       const date = url.searchParams.get("date") ?? undefined;
-      if (date && !DATE_RE.test(date)) return json({ error: "date must be YYYY-MM-DD" }, 400);
+      if (date && !DATE_RE.test(date)) return json({ error: "invalid_date" }, 400);
       return json(await buildToday(db, clock, date));
     }
     case "GET /admin/api/checkins": {
       const date = url.searchParams.get("date") ?? bangkokDateOf(now);
-      if (!DATE_RE.test(date)) return json({ error: "date must be YYYY-MM-DD" }, 400);
+      if (!DATE_RE.test(date)) return json({ error: "invalid_date" }, 400);
       return json({ date, attempts: await attemptsFor(db, date) });
     }
     case "POST /admin/api/duties/:id/override": {
       // Manual check-in for a legitimate GPS failure. A note is required and audited.
       const b = await readJson(req);
       const note = typeof b?.note === "string" ? b.note.trim() : "";
-      if (note.length < 3 || note.length > 500) return json({ error: "note (3-500 chars) required" }, 400);
+      if (note.length < 3 || note.length > 500) return json({ error: "note_required" }, 400);
       const late = b?.late === true ? 1 : 0;
       const [upd] = await db.batch([
         db.prepare(
@@ -167,19 +211,55 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
         ).bind(now, late, note, id, admin.username),
         db.prepare("INSERT INTO audit_log (at, actor, event, detail) SELECT ?, ?, 'duty_override', ? WHERE changes() = 1")
           .bind(now, actor, JSON.stringify({ dutyId: id, note, late })),
+        ...(config.confirmOnCheckin ? [queueConfirm(db, now, id)] : []),
       ]);
-      if (upd.meta.changes !== 1) return json({ error: "duty not found, cancelled, or already checked in" }, 409);
+      if (upd.meta.changes !== 1) return json({ error: "override_conflict" }, 409);
+      if (config.confirmOnCheckin) sendConfirm(env, clock, line, confirmKey(id), waitUntil);
       return json({ ok: true });
     }
     case "GET /admin/api/export.csv": {
       const from = url.searchParams.get("from") ?? "", to = url.searchParams.get("to") ?? from;
-      if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return json({ error: "from/to must be YYYY-MM-DD, from <= to" }, 400);
+      if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return json({ error: "invalid_range" }, 400);
       return new Response(await exportCsv(db, from, to), {
         headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="checkins-${from}_${to}.csv"` },
       });
     }
+
+    /* ------------------------------------------------- scheduling settings */
+    case "GET /admin/api/settings":
+      return json(await scheduleInfo(db));
+    case "POST /admin/api/settings": {
+      const res = await saveSchedule(db, clock, actor, await readJson(req));
+      return res.ok ? json({ ok: true, schedule: res.value, replanned: res.replanned }) : json({ error: res.error, field: res.field }, 400);
+    }
+
+    /* ------------------------------------------------- management accounts */
+    case "GET /admin/api/admins": {
+      const rows = await listAdmins(db);
+      return json({
+        self: admin.id,
+        admins: rows.map((r) => ({
+          id: r.id, username: r.username, displayName: r.display_name, mustChange: r.must_change === 1, disabled: r.disabled === 1,
+          locked: (r.locked_until ?? 0) > now, createdAt: r.created_at, lastLoginAt: r.last_login_at,
+        })),
+      });
+    }
+    case "POST /admin/api/admins": {
+      const b = await readJson(req);
+      const res = await createAdmin(db, clock, admin, b?.username, b?.displayName);
+      return res.ok ? json(res, 201) : json({ error: res.error }, res.status);
+    }
+    case "POST /admin/api/admins/:id/reset-password": {
+      const res = await resetAdminPassword(db, clock, admin, id);
+      return res.ok ? json(res) : json({ error: res.error }, res.status);
+    }
+    case "POST /admin/api/admins/:id/disable":
+    case "POST /admin/api/admins/:id/enable": {
+      const res = await setAdminDisabled(db, clock, admin, id, route.endsWith("disable"));
+      return res.ok ? json(res) : json({ error: res.error }, res.status);
+    }
   }
-  return json({ error: "not found" }, 404);
+  return json({ error: "not_found" }, 404);
 }
 
 const me = (u: AdminUser) => ({ username: u.username, displayName: u.display_name, mustChange: u.must_change === 1 });

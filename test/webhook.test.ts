@@ -43,7 +43,7 @@ describe("webhook", () => {
     const body = JSON.stringify({ events: [{ type: "message", webhookEventId: "e2", replyToken: "r", source: { type: "user", userId: "U001" },
       message: { type: "location", latitude: 13.75, longitude: 100.5 } }] });
     await post(body, await sign(body));
-    expect(line.replies[0].messages[0].text).toMatch(/only sends duty notices/);
+    expect(line.replies[0].messages[0].text).toMatch(/แชตนี้ใช้ส่งการแจ้งเตือนเวรเท่านั้น/);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM checkins").first<{ n: number }>())!.n).toBe(0);
   });
 

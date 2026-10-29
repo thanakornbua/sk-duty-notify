@@ -12,6 +12,7 @@ Scope (2026-10-29): **5-person prototype, 10 duty days** first (OA quota 300/mon
 - [x] 4. Admin: dashboard, overrides, anomalies, CSV export, location map picker, retention purge
 - [~] 5. Live with real LINE credentials (OA "SK Roll Call"); webhook signature and ID-token verify confirmed. **Real-phone smoke test still to do**
 - [x] 7. Real admin login (username + password, sessions) and Carbon Design System UI (2026-10-29)
+- [x] 8. Management accounts page, Thai/English, in-page duty sheet, check-in completion screen + LINE confirmation, scheduling settings page (2026-10-29)
 - [ ] 6. Pilot support: per-location distance/accuracy report for tuning radii
 
 ## Layout
@@ -42,14 +43,19 @@ All values live in `src/config.ts`; all are unconfirmed defaults.
 - `__Host-` cookies need HTTPS: for local UI work run `wrangler dev --local-protocol https` (plain http://localhost drops the cookie in Chromium).
 - Staff and location codes allow letters, digits, `.`, `_`, `-` (max 32), e.g. `singha.su`.
 - LIFF endpoint is `/liff` (registered in the LINE console as `https://<worker>.<subdomain>.workers.dev/liff`). LINE first opens the endpoint itself with `?liff.state=/link`; `public/liff/index.html` runs `liff.init()`, which forwards. (Missing until 2026-10-29: links returned "not found".)
+- Management accounts: every account has the same rights (no roles). Any admin can create accounts (16-char temporary password, shown once, must be changed), reset others' passwords (signs them out, unlocks), disable/enable others. Nobody can disable or reset themselves via this page, so at least one active admin always remains. Accounts page shows last sign-in.
+- Thai/English: per-browser choice (localStorage), default Thai unless the device language is English. Server responses are codes; `public/i18n.js` holds every string in both languages (a missing key logs `i18n: missing key`, which the browser test checks). Thai text uses IBM Plex Sans Thai Looped (shipped with Carbon). LINE messages use `messageLanguage` (default Thai) with Thai dates in the Buddhist era.
+- Duty sheet (`/sheet`): members × dates grid (max 31 days), AM/PM ticks. A published sheet is a full snapshot of its date range, exactly like a file: unticked dates become explicit "no duty". New ticks use the chosen location and the current shift times; existing duties keep their own location/times; other shifts from file imports are carried over unchanged; checked-in/missed duties are locked.
+- Check-in confirmation: CONFIRM outbox row inserted in the same transaction as the check-in (only if this request's check-in is the stored one), sent immediately via `ctx.waitUntil` + `sendNow`, retried by the scheduler if that fails; dedupe key `C:<duty>`. Sent even during quiet hours, because it answers the member's own action. Overrides confirm too. ~10 extra messages/day for 5 people; switchable in Settings.
+- Scheduling settings (`/settings`): changes apply at once to check-in windows and to messages not yet attempted (future QUEUED REMINDER/MISSED rows with 0 attempts are deleted and re-planned on the next run). New shift times apply to duties published afterwards. Time fields are 24-hour HH:MM text (the browser time picker may show 12-hour "PM", which clashes with shift names).
 - Branding: school emblem downscaled to `public/brand/emblem-{32,96,192}.png` (header, login/LIFF pages, favicon). The 9000 px original in `assets/` is not committed.
 - Webhook replies that fail are logged and recorded as `reply_failed` on the event row.
 - UI: Carbon Design System (white / g100 by device preference). Carbon's precompiled CSS has no type-helper classes, so headings use Carbon's type-scale sizes in `public/app.css`.
 - Fake LINE client is used only when `LINE_CLIENT=fake`. Without real credentials the live Worker plans and sweeps but sends nothing, and `/api/*` answers 503.
 - LIFF SDK 2.24.0 is pinned by URL but has no SRI hash: LINE's CDN sends no CORS header, so `integrity` would block it. Leaflet 1.9.4 has SRI.
 
-## Tests (102, `npm test`)
-schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 4 · auth 11.
+## Tests (121, `npm test`)
+schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 4 · auth 11 · confirmation 9 · management (accounts, settings, sheet data) 8 · webhook 5.
 Spec 12 acceptance criteria → `test/checkin.test.ts` "AC1"–"AC3", `test/scheduler.test.ts` "never twice, even after a restart" (AC4), `test/admin.test.ts` "AC5".
 
 ## Performance

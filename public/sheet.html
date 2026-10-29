@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/png" href="/brand/emblem-32.png">
+<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="page">
+  <h1 class="h1" data-i18n="sheet.title"></h1>
+  <p class="body secondary" style="max-width:48rem" data-i18n="sheet.intro"></p>
+  <div class="row row--fields" id="controls" style="margin-top:1.5rem"></div>
+  <div id="msg" style="margin-top:1rem"></div>
+  <div id="grid" style="margin-top:1rem"></div>
+  <div class="row" style="margin-top:1rem"><span class="grow"></span><span id="actions"></span></div>
+  <div id="review" style="margin-top:1rem"></div>
+</main>
+<script type="module">
+import { api, bangkokToday, button, dataTable, el, notification, select, shell, tag, textInput } from "/admin-common.js";
+import { dayShort, errText, issueText, t } from "/i18n.js";
+
+await shell("/sheet");
+document.title = t("sheet.title");
+const $ = (id) => document.getElementById(id);
+const addDays = (d, n) => { const [y, m, dd] = d.split("-").map(Number); return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10); };
+const SHIFTS = ["AM", "PM"];
+
+const today = bangkokToday();
+const from = textInput({ id: "from", label: t("sheet.from"), type: "date", value: today });
+const to = textInput({ id: "to", label: t("sheet.to"), type: "date", value: addDays(today, 9) });
+let locPick = null;
+$("controls").append(from, to, button(t("act.load"), { kind: "tertiary", size: "md", onclick: load }));
+
+/** state: data from the server + the ticks. key = staffCode|date|shift */
+let data = null, ticks = new Map(), staged = null, dirty = false;
+const keyOf = (code, date, shift) => `${code}|${date}|${shift}`;
+
+window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
+
+async function load() {
+  $("msg").replaceChildren(); $("review").replaceChildren(); $("actions").replaceChildren(); staged = null;
+  const r = await api("GET", `/admin/api/duties?from=${from.input.value}&to=${to.input.value}`);
+  if (!r.ok) { $("msg").replaceChildren(notification("error", errText(r.data))); $("grid").replaceChildren(); return; }
+  data = r.data;
+  ticks = new Map();
+  for (const d of data.duties) if (SHIFTS.includes(d.shift)) ticks.set(keyOf(d.staffCode, d.date, d.shift), d);
+  dirty = false;
+  locPick?.remove();
+  if (!data.locations.length) { $("msg").replaceChildren(notification("warning", t("sheet.noLocations"))); }
+  else {
+    locPick = select({ id: "loc", label: t("sheet.location"), value: data.locations[0].code, options: data.locations.map((l) => [l.code, `${l.code} · ${l.name}`]) });
+    $("controls").insertBefore(locPick, $("controls").lastChild);
+  }
+  if (!data.members.length) { $("msg").append(notification("info", t("sheet.noMembers"))); }
+  render();
+}
+
+function dates() {
+  const out = [];
+  for (let d = data.from; d <= data.to; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+function cell(m, date) {
+  const box = el("div", { class: "cell" });
+  for (const shift of SHIFTS) {
+    const k = keyOf(m.staffCode, date, shift);
+    const existing = data.duties.find((d) => d.staffCode === m.staffCode && d.date === date && d.shift === shift);
+    const locked = existing && existing.status !== "PENDING";
+    const id = `c-${k.replace(/[^A-Za-z0-9]/g, "_")}`;
+    const input = el("input", { type: "checkbox", class: "cds--checkbox", id, checked: ticks.has(k), disabled: locked,
+      title: locked ? t("sheet.locked") : null,
+      onchange: (e) => {
+        if (e.target.checked) ticks.set(k, { new: true }); else ticks.delete(k);
+        dirty = true; staged = null; $("review").replaceChildren(); actions();
+      } });
+    box.append(el("div", { class: "cds--checkbox-wrapper" }, input,
+      el("label", { class: "cds--checkbox-label", for: id }, el("span", { class: "cds--checkbox-label-text" },
+        existing && existing.locationCode !== (locPick?.input.value) ? `${shift} · ${existing.locationCode}` : shift))));
+  }
+  // Other shifts (from file imports) are kept unchanged.
+  for (const d of data.duties.filter((d) => d.staffCode === m.staffCode && d.date === date && !SHIFTS.includes(d.shift))) {
+    box.append(tag(t("sheet.otherShift", { shift: d.shift, start: d.start, end: d.end, location: d.locationCode }), "cool-gray"));
+  }
+  return box;
+}
+
+function render() {
+  const ds = dates();
+  const known = new Set(data.knownDates);
+  const header = ds.map((d) => el("div", {}, el("div", {}, dayShort(d)), known.has(d) ? null : tag(t("sheet.notLoaded"), "warm-gray")));
+  const rows = data.members.map((m) => [el("div", {}, el("div", {}, m.label), el("span", { class: "helper mono" }, m.staffCode)), ...ds.map((d) => cell(m, d))]);
+  const table = dataTable({ columns: ["", ...ds.map(() => "")], rows, empty: t("sheet.noMembers") });
+  table.classList.add("sheet");
+  // Rich header cells (date + "no roster yet" tag)
+  table.querySelectorAll("thead th").forEach((th, i) => { if (i > 0) th.firstChild.replaceChildren(header[i - 1]); else th.firstChild.textContent = t("col.member"); });
+  $("grid").replaceChildren(table);
+  actions();
+}
+
+function actions() {
+  const can = data && data.members.length && data.locations.length;
+  $("actions").replaceChildren(...(can ? [
+    dirty ? el("span", { class: "helper", style: "margin-right:1rem" }, t("sheet.unsaved")) : "",
+    button(t("act.review"), { onclick: review }),
+  ] : []));
+}
+
+/** Rows for the importer: a full snapshot of the range. Dates with nothing at all become explicit "no duty". */
+function rows() {
+  const out = [];
+  let line = 0;
+  const loc = locPick.input.value;
+  for (const date of dates()) {
+    const before = out.length;
+    for (const m of data.members) {
+      for (const shift of SHIFTS) {
+        const v = ticks.get(keyOf(m.staffCode, date, shift));
+        if (!v) continue;
+        // Existing duties keep their own location and times; new ticks use the chosen location and shift times.
+        out.push(v.new ? { line: ++line, date, staffCode: m.staffCode, locationCode: loc, shift }
+          : { line: ++line, date, staffCode: m.staffCode, locationCode: v.locationCode, shift, start: v.start, end: v.end });
+      }
+      for (const d of data.duties.filter((d) => d.staffCode === m.staffCode && d.date === date && !SHIFTS.includes(d.shift))) {
+        out.push({ line: ++line, date, staffCode: m.staffCode, locationCode: d.locationCode, shift: d.shift, start: d.start, end: d.end });
+      }
+    }
+    if (out.length === before) out.push({ line: ++line, date, staffCode: "", locationCode: "", shift: "" });
+  }
+  return out;
+}
+
+async function review() {
+  const r = await api("POST", "/admin/api/imports", { rows: rows() });
+  if (!r.ok) {
+    $("review").replaceChildren(notification("error", t("sheet.notAccepted")),
+      dataTable({ columns: [""], rows: (r.data.errors ?? []).map((e) => [issueText(e)]) }));
+    return;
+  }
+  staged = r.data;
+  $("review").replaceChildren(
+    notification("info", t("sheet.review.title"), t("sheet.review.body", { dates: staged.dates.length, from: staged.dates[0], to: staged.dates.at(-1) })),
+    dataTable({ columns: [t("sum.new"), t("sum.unchanged"), t("sum.cancelled")], rows: [[String(staged.insert), String(staged.keep), String(staged.cancel)]] }),
+    ...staged.warnings.map((w) => notification("warning", t("sum.keptAsIs"), issueText(w))),
+    el("div", { class: "row", style: "margin-top:1rem" }, el("span", { class: "grow" }), button(t("act.publish"), { onclick: publish })));
+}
+
+async function publish() {
+  if (!staged) return;
+  const r = await api("POST", `/admin/api/imports/${staged.batchId}/publish`);
+  if (!r.ok) { $("review").replaceChildren(notification("error", t("sheet.publishFailed"), (r.data.errors ?? []).map(issueText).join(" · "))); return; }
+  dirty = false;
+  await load();
+  $("msg").replaceChildren(notification("success", t("sheet.published")));
+}
+
+load();
+</script>
+</body>
+</html>

@@ -34,12 +34,27 @@ export async function verifyPassword(password: string, stored: string): Promise<
 /** Verified against when the username is unknown, so both paths cost the same. */
 const DUMMY = "pbkdf2-sha256$20000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
+/** Error codes (the UI translates them). */
 export function passwordProblem(password: unknown, username: string): string | null {
-  if (typeof password !== "string") return "Password required.";
-  if (password.length < A.minPasswordLength) return `Use at least ${A.minPasswordLength} characters.`;
-  if (password.length > 200) return "Use at most 200 characters.";
-  if (password.toLowerCase().includes(username.toLowerCase())) return "The password must not contain the username.";
+  if (typeof password !== "string") return "password_required";
+  if (password.length < A.minPasswordLength) return "password_too_short";
+  if (password.length > 200) return "password_too_long";
+  if (password.toLowerCase().includes(username.toLowerCase())) return "password_contains_username";
   return null;
+}
+
+export const USERNAME_RE = /^[A-Za-z0-9._-]{3,64}$/;
+const TEMP_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"; // 54 symbols, no look-alikes
+
+/** 16 random symbols; rejection sampling (54 * 4 = 216) avoids modulo bias. Shown once, must be changed at sign-in. */
+export function temporaryPassword(): string {
+  let out = "";
+  while (out.length < 16) {
+    for (const b of crypto.getRandomValues(new Uint8Array(32))) {
+      if (b < 216 && out.length < 16) out += TEMP_ALPHABET[b % TEMP_ALPHABET.length];
+    }
+  }
+  return out;
 }
 
 export interface AdminUser { id: number; username: string; display_name: string; must_change: number }
@@ -82,7 +97,7 @@ export async function login(db: D1Database, clock: Clock, username: unknown, pas
 
   const token = b64(crypto.getRandomValues(new Uint8Array(32))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   await db.batch([
-    db.prepare("UPDATE admin_users SET failed_count = 0, locked_until = NULL WHERE id = ?").bind(user.id),
+    db.prepare("UPDATE admin_users SET failed_count = 0, locked_until = NULL, last_login_at = ? WHERE id = ?").bind(now, user.id),
     db.prepare(`INSERT INTO admin_sessions (token_hash, user_id, created_at, expires_at, last_seen_at, ip_hash, user_agent)
                 VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .bind(await sha256Hex(token), user.id, now, now + A.sessionHours * 60 * MIN, now, meta.ipHash, meta.userAgent?.slice(0, 300) ?? null),
@@ -133,11 +148,11 @@ export async function logout(db: D1Database, clock: Clock, admin: AdminUser & { 
 export async function changePassword(db: D1Database, clock: Clock, admin: AdminUser & { tokenHash: string }, current: unknown, next: unknown) {
   const row = await db.prepare("SELECT password_hash FROM admin_users WHERE id = ?").bind(admin.id).first<{ password_hash: string }>();
   if (!row || typeof current !== "string" || !(await verifyPassword(current.slice(0, 200), row.password_hash))) {
-    return { ok: false as const, error: "Current password is wrong." };
+    return { ok: false as const, error: "wrong_current_password" };
   }
   const problem = passwordProblem(next, admin.username);
   if (problem) return { ok: false as const, error: problem };
-  if (next === current) return { ok: false as const, error: "Choose a different password." };
+  if (next === current) return { ok: false as const, error: "same_password" };
   const now = clock.now();
   await db.batch([
     db.prepare("UPDATE admin_users SET password_hash = ?, must_change = 0, password_changed_at = ? WHERE id = ?")
@@ -146,4 +161,69 @@ export async function changePassword(db: D1Database, clock: Clock, admin: AdminU
     audit(db, now, `admin:${admin.username}`, "password_changed", {}),
   ]);
   return { ok: true as const };
+}
+
+/* ------------------------------------------------------- account management */
+
+export interface AdminRow {
+  id: number; username: string; display_name: string; must_change: number; disabled: number;
+  locked_until: number | null; created_at: number; last_login_at: number | null;
+}
+
+export async function listAdmins(db: D1Database) {
+  return (await db.prepare(
+    "SELECT id, username, display_name, must_change, disabled, locked_until, created_at, last_login_at FROM admin_users ORDER BY username",
+  ).all<AdminRow>()).results;
+}
+
+type Admin = AdminUser & { tokenHash: string };
+type Result = { ok: true; username: string; temporaryPassword?: string } | { ok: false; status: number; error: string };
+
+/** Any admin can create another. The new account starts with a temporary password it must change. */
+export async function createAdmin(db: D1Database, clock: Clock, by: Admin, username: unknown, displayName: unknown): Promise<Result> {
+  if (typeof username !== "string" || !USERNAME_RE.test(username)) return { ok: false, status: 400, error: "invalid_username" };
+  if (typeof displayName !== "string" || !displayName.trim() || displayName.length > 100) return { ok: false, status: 400, error: "invalid_display_name" };
+  const now = clock.now();
+  const temp = temporaryPassword();
+  try {
+    await db.batch([
+      db.prepare("INSERT INTO admin_users (username, display_name, password_hash, must_change, created_at) VALUES (?, ?, ?, 1, ?)")
+        .bind(username, displayName.trim(), await hashPassword(temp), now),
+      audit(db, now, `admin:${by.username}`, "admin_created", { username }),
+    ]);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) return { ok: false, status: 409, error: "username_taken" };
+    throw e;
+  }
+  return { ok: true, username, temporaryPassword: temp };
+}
+
+/** New temporary password; unlocks the account and signs it out everywhere. Your own password: use the Account page. */
+export async function resetAdminPassword(db: D1Database, clock: Clock, by: Admin, id: number): Promise<Result> {
+  if (id === by.id) return { ok: false, status: 400, error: "use_account_page" };
+  const target = await db.prepare("SELECT username FROM admin_users WHERE id = ?").bind(id).first<{ username: string }>();
+  if (!target) return { ok: false, status: 404, error: "not_found" };
+  const now = clock.now();
+  const temp = temporaryPassword();
+  await db.batch([
+    db.prepare("UPDATE admin_users SET password_hash = ?, must_change = 1, failed_count = 0, locked_until = NULL WHERE id = ?")
+      .bind(await hashPassword(temp), id),
+    db.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(id),
+    audit(db, now, `admin:${by.username}`, "admin_password_reset", { username: target.username }),
+  ]);
+  return { ok: true, username: target.username, temporaryPassword: temp };
+}
+
+/** Disabling signs the account out everywhere. You cannot disable yourself (so one active admin always remains). */
+export async function setAdminDisabled(db: D1Database, clock: Clock, by: Admin, id: number, disabled: boolean): Promise<Result> {
+  if (id === by.id) return { ok: false, status: 400, error: "cannot_disable_self" };
+  const target = await db.prepare("SELECT username FROM admin_users WHERE id = ?").bind(id).first<{ username: string }>();
+  if (!target) return { ok: false, status: 404, error: "not_found" };
+  const now = clock.now();
+  await db.batch([
+    db.prepare("UPDATE admin_users SET disabled = ? WHERE id = ?").bind(disabled ? 1 : 0, id),
+    ...(disabled ? [db.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(id)] : []),
+    audit(db, now, `admin:${by.username}`, disabled ? "admin_disabled" : "admin_enabled", { username: target.username }),
+  ]);
+  return { ok: true, username: target.username };
 }

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/png" href="/brand/emblem-32.png">
+<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="page" style="max-width:56rem">
+  <h1 class="h1" data-i18n="set.title"></h1>
+  <p class="body secondary" data-i18n="set.intro"></p>
+  <p class="helper" id="last" style="margin-top:.5rem"></p>
+  <div id="msg" style="margin-top:1rem"></div>
+  <form id="form" novalidate></form>
+</main>
+<script type="module">
+import { api, button, el, notification, select, shell, textInput } from "/admin-common.js";
+import { dateTime, t } from "/i18n.js";
+
+await shell("/settings");
+document.title = t("set.title");
+const $ = (id) => document.getElementById(id);
+const { data } = await api("GET", "/admin/api/settings");
+if (data.updatedAt) $("last").textContent = t("set.lastChange", { time: dateTime(data.updatedAt), by: data.updatedBy.replace(/^admin:/, "") });
+
+// 24-hour HH:MM as plain text: the browser's own time picker may show 12-hour "PM", which clashes with shift names.
+const time = (id, label, value, helper) => textInput({ id, label, value, helper: helper ?? t("set.timeHelp"), inputmode: "numeric", maxlength: 5, placeholder: "HH:MM", autocomplete: "off" });
+const num = (id, label, value, helper, min, max) => textInput({ id, label, type: "number", value, helper, min, max });
+const f = {};
+function build(s) {
+  for (const k of Object.keys(f)) delete f[k];
+  for (const sh of ["AM", "PM"]) {
+    f[`shifts.${sh}.start`] = time(`${sh}-start`, t("set.shiftStart", { shift: sh }), s.shifts[sh].start);
+    f[`shifts.${sh}.end`] = time(`${sh}-end`, t("set.shiftEnd", { shift: sh }), s.shifts[sh].end);
+  }
+  f.reminderTime = time("reminder", t("set.reminderTime"), s.reminderTime, t("set.reminderHelp"));
+  f.missedAfterMinutes = num("missed", t("set.missedAfter"), s.missedAfterMinutes, t("set.missedHelp"), 5, 240);
+  f.messageLanguage = select({ id: "lang", label: t("set.language"), value: s.messageLanguage, options: [["th", t("set.lang.th")], ["en", t("set.lang.en")]] });
+  const confirm = el("input", { type: "checkbox", class: "cds--checkbox", id: "confirm", checked: s.confirmOnCheckin });
+  f.confirmOnCheckin = el("div", { class: "cds--form-item cds--checkbox-wrapper" }, confirm,
+    el("label", { class: "cds--checkbox-label", for: "confirm" }, el("span", { class: "cds--checkbox-label-text" }, t("set.confirm"))),
+    el("div", { class: "cds--form__helper-text" }, t("set.confirmHelp")));
+  f.confirmOnCheckin.input = confirm;
+  f["quietHours.start"] = time("q-start", t("set.quietStart"), s.quietHours.start);
+  f["quietHours.end"] = time("q-end", t("set.quietEnd"), s.quietHours.end);
+  f.earlyGraceMinutes = num("early", t("set.early"), s.earlyGraceMinutes, t("set.earlyHelp"), 0, 120);
+  f.lateAfterMinutes = num("late", t("set.lateAfter"), s.lateAfterMinutes, t("set.lateHelp"), 0, 240);
+
+  const section = (title, ...rows) => el("div", { class: "cds--tile stack", style: "margin-top:1rem" }, el("h2", { class: "h3" }, title), ...rows);
+  $("form").replaceChildren(
+    section(t("set.shifts"), el("div", { class: "row row--fields" }, f["shifts.AM.start"], f["shifts.AM.end"]), el("div", { class: "row row--fields" }, f["shifts.PM.start"], f["shifts.PM.end"])),
+    section(t("set.window"), el("div", { class: "row row--fields" }, f.earlyGraceMinutes, f.lateAfterMinutes)),
+    section(t("set.messages"), el("div", { class: "row row--fields" }, f.reminderTime, f.missedAfterMinutes), el("div", { class: "row row--fields" }, f.messageLanguage), f.confirmOnCheckin),
+    section(t("set.quiet"), el("div", { class: "row row--fields" }, f["quietHours.start"], f["quietHours.end"])),
+    el("div", { class: "row", style: "margin-top:1.5rem" }, el("span", { class: "grow" }),
+      button(t("set.defaults"), { kind: "ghost", onclick: () => build(data.defaults) }), button(t("act.save"), { type: "submit" })));
+}
+build(data.schedule);
+
+const v = (k) => f[k].input.value;
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  for (const w of Object.values(f)) w.invalid?.(null);
+  const body = {
+    shifts: { AM: { start: v("shifts.AM.start"), end: v("shifts.AM.end") }, PM: { start: v("shifts.PM.start"), end: v("shifts.PM.end") } },
+    reminderTime: v("reminderTime"), missedAfterMinutes: Number(v("missedAfterMinutes")), messageLanguage: v("messageLanguage"),
+    confirmOnCheckin: f.confirmOnCheckin.input.checked, quietHours: { start: v("quietHours.start"), end: v("quietHours.end") },
+    earlyGraceMinutes: Number(v("earlyGraceMinutes")), lateAfterMinutes: Number(v("lateAfterMinutes")),
+  };
+  const r = await api("POST", "/admin/api/settings", body);
+  if (r.ok) {
+    $("msg").replaceChildren(notification("success", t("set.saved"), r.data.replanned ? t("set.savedBody", { n: r.data.replanned }) : ""));
+  } else {
+    const msg = t(`set.field.${r.data.error}`);
+    // A field like "shifts.AM" or "quietHours" marks its end input; others mark themselves.
+    const target = f[r.data.field] ?? f[`${r.data.field}.end`];
+    target?.invalid?.(msg);
+    $("msg").replaceChildren(notification("error", t("set.notSaved"), msg));
+  }
+  scrollTo({ top: 0, behavior: "smooth" });
+});
+</script>
+</body>
+</html>

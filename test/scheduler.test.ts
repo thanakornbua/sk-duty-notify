@@ -4,6 +4,7 @@ import { config } from "../src/config";
 import { FakeLineClient } from "../src/line-fake";
 import { buildMessages, LIMITS } from "../src/messages";
 import { claim, runScheduler } from "../src/scheduler";
+import { applySchedule } from "../src/settings";
 import { addDays, bangkokDateOf } from "../src/time";
 import { amPm, at, D, db, dutyId, LIFF, MIN, publishRows, reset, seedLocation, seedMembers, standardDay } from "./helpers";
 
@@ -45,7 +46,20 @@ describe("outbox planning", () => {
 });
 
 describe("sending", () => {
-  beforeEach(async () => { await standardDay(); line = new FakeLineClient(); clock = new FixedClock(at(D, "15:00", -1)); });
+  // English copy here; the Thai copy has its own test below.
+  beforeEach(async () => { await standardDay(); applySchedule({ messageLanguage: "en" }); line = new FakeLineClient(); clock = new FixedClock(at(D, "15:00", -1)); });
+
+  it("Thai copy (the default): Thai date with Buddhist year, Thai button label", async () => {
+    applySchedule({});
+    clock.set(at(D, "16:00", -1)); await tick(); await drain();
+    const t = line.sent[0].messages[0].text as string;
+    expect(t).toContain("วันจันทร์ที่ 2 มีนาคม พ.ศ. 2569");
+    expect(t).toMatch(/• AM 06:30–12:00 น\. ที่ Site GATE/);
+    clock.set(at(D, "06:30")); await tick(); await drain();
+    const prompt = line.sent.find((s) => s.messages[0].type === "template")!.messages[0] as any;
+    expect(prompt.template.actions[0].label).toBe("เช็กอิน");
+    expect(prompt.template.text).toMatch(/^เวร AM เริ่ม 06:30 น\./);
+  });
 
   it("16:00 the day before: one reminder per member listing both shifts", async () => {
     await tick();
@@ -232,7 +246,7 @@ describe("failures", () => {
 
 describe("quiet hours", () => {
   it("a roster published late at night waits until 06:00; nothing goes out at 22:00", async () => {
-    await reset(); await seedMembers(1); await seedLocation();
+    await reset(); applySchedule({ messageLanguage: "en" }); await seedMembers(1); await seedLocation();
     line = new FakeLineClient(); clock = new FixedClock(at(D, "22:00", -1));
     await publishRows([{ date: D, staffCode: "S001", locationCode: "GATE", shift: "AM" }], clock);
     await tick();

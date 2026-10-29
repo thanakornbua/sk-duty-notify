@@ -1,5 +1,7 @@
 // Shared by the admin pages: Carbon UI shell, session-aware API calls, small Carbon component builders.
 // Signed-in state is an HttpOnly session cookie set by /admin/api/login; this script never sees it.
+import { applyStatic, lang, setLang, t } from "/i18n.js";
+export { hhmm } from "/i18n.js";
 
 /** Build DOM without innerHTML. */
 export function el(tag, props = {}, ...kids) {
@@ -29,26 +31,32 @@ export async function api(method, path, body) {
   return { ok: res.ok, status: res.status, data };
 }
 
-const NAV = [["/dashboard", "Dashboard"], ["/admin", "Members & roster"], ["/locations", "Locations"]];
+const NAV = [["/dashboard", "nav.dashboard"], ["/sheet", "nav.sheet"], ["/admin", "nav.members"], ["/locations", "nav.locations"],
+  ["/settings", "nav.settings"], ["/accounts", "nav.accounts"]];
+
+/** ไทย / English switch (per browser). */
+export const langSwitch = (kind = "ghost") => button(t("lang.other"), { kind, size: "sm", onclick: () => setLang(lang() === "th" ? "en" : "th") });
 
 /** Require a signed-in admin, then render the Carbon UI shell header. Returns the user. */
 export async function shell(active) {
+  applyStatic();
   const { data } = await api("GET", "/admin/api/me");
   const user = data.user;
   if (user.mustChange && location.pathname !== "/account") { location.href = "/account?first=1"; return new Promise(() => {}); }
-  const link = ([href, label]) => el("li", {}, el("a", { class: "cds--header__menu-item", href, "aria-current": href === active ? "page" : null },
-    el("span", { class: "cds--text-truncate--end" }, label)));
+  const link = ([href, key]) => el("li", {}, el("a", { class: "cds--header__menu-item", href, "aria-current": href === active ? "page" : null },
+    el("span", { class: "cds--text-truncate--end" }, t(key))));
   const header = el("header", { class: "cds--header", "aria-label": "SK Duty" },
     el("a", { class: "cds--header__name", href: "/dashboard" },
       el("img", { class: "brand-mark", src: "/brand/emblem-96.png", alt: "", width: 28, height: 28 }),
       el("span", { class: "cds--header__name--prefix" }, "SK"), "\u00a0Duty"),
     el("nav", { class: "cds--header__nav", "aria-label": "Main" }, el("ul", { class: "cds--header__menu-bar" }, NAV.map(link))),
     el("div", { class: "cds--header__global" },
+      langSwitch(),
       el("a", { class: "cds--link who body", href: "/account" }, user.displayName),
-      button("Sign out", { kind: "ghost", size: "sm", onclick: async () => { await api("POST", "/admin/api/logout"); location.href = "/login"; } })));
+      button(t("act.signOut"), { kind: "ghost", size: "sm", onclick: async () => { await api("POST", "/admin/api/logout"); location.href = "/login"; } })));
   const mobile = el("nav", { class: "mobile-nav", "aria-label": "Main" },
-    ...NAV.map(([href, label]) => el("a", { href, "aria-current": href === active ? "page" : null }, label)),
-    el("a", { href: "/account", "aria-current": active === "/account" ? "page" : null }, "Account"));
+    ...NAV.map(([href, key]) => el("a", { href, "aria-current": href === active ? "page" : null }, t(key))),
+    el("a", { href: "/account", "aria-current": active === "/account" ? "page" : null }, t("nav.account")));
   document.body.prepend(header, mobile);
   return user;
 }
@@ -103,7 +111,7 @@ export const human = (code) => String(code).replace(/_/g, " ");
 export const tag = (text, color = "gray") => el("span", { class: `cds--tag cds--tag--${color} cds--tag--sm` }, el("span", { class: "cds--tag__label" }, text));
 
 /** Carbon data table. rows: arrays of cell content. */
-export function dataTable({ title, description, columns, rows, empty = "Nothing to show.", toolbar }) {
+export function dataTable({ title, description, columns, rows, empty = t("common.none"), toolbar }) {
   const body = rows.length
     ? rows.map((r) => el("tr", {}, r.map((c) => el("td", {}, c))))
     : [el("tr", {}, el("td", { colspan: columns.length, class: "secondary" }, empty))];
@@ -119,7 +127,7 @@ export function dataTable({ title, description, columns, rows, empty = "Nothing 
 }
 
 /** Carbon modal. Resolves true on the primary button, false on cancel / Escape. */
-export function modal({ title, label, body, primary = "OK", secondary = "Cancel", danger = false, validate }) {
+export function modal({ title, label, body, primary = t("act.done"), secondary = t("act.cancel"), danger = false, validate }) {
   return new Promise((resolve) => {
     const err = el("div");
     const ok = button(primary, { kind: danger ? "danger" : "primary" });
@@ -145,6 +153,4 @@ export function modal({ title, label, body, primary = "OK", secondary = "Cancel"
   });
 }
 
-const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit" });
-export const hhmm = (t) => (t == null ? "" : fmt.format(new Date(t)));
 export const bangkokToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());

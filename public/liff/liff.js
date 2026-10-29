@@ -1,5 +1,15 @@
 // Shared by the LIFF pages. The page never decides who the user is: it sends LINE's ID token and the server verifies it.
-import { notification } from "/admin-common.js";
+import { langSwitch, notification } from "/admin-common.js";
+import { applyStatic } from "/i18n.js";
+
+/** Language + static texts + the ไทย/English switch in the corner. */
+export function setupPage() {
+  applyStatic();
+  const corner = document.createElement("div");
+  corner.className = "lang-corner";
+  corner.append(langSwitch());
+  document.body.append(corner);
+}
 
 export const $ = (id) => document.getElementById(id);
 
@@ -37,5 +47,4 @@ export async function api(path, body = {}) {
   return { status: res.status, data };
 }
 
-const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit" });
-export const hhmm = (t) => fmt.format(new Date(t));
+export { hhmm } from "/i18n.js";

@@ -142,7 +142,7 @@ async function sweepOutbox(db: D1Database, now: number): Promise<number> {
                 WHERE ${waiting} AND kind = 'REMINDER' AND NOT EXISTS (
                   SELECT 1 FROM duties d WHERE d.member_id = outbox.member_id AND d.duty_date = outbox.duty_date AND d.status = 'PENDING')`).bind(now),
     db.prepare(`UPDATE outbox SET status = 'SUPPRESSED', last_error = 'already_checked_in', updated_at = ?1
-                WHERE ${waiting} AND duty_id IN (SELECT id FROM duties WHERE status = 'CHECKED_IN')`).bind(now),
+                WHERE ${waiting} AND kind != 'CONFIRM' AND duty_id IN (SELECT id FROM duties WHERE status = 'CHECKED_IN')`).bind(now),
     db.prepare(`UPDATE outbox SET status = 'FAILED', last_error = COALESCE(last_error || '; ', '') || 'deadline_passed', updated_at = ?1
                 WHERE ${waiting} AND deadline_at <= ?1`).bind(now),
   ]);
@@ -180,6 +180,23 @@ export async function claim(db: D1Database, owner: string, now: number, limit: n
   return results;
 }
 
+/**
+ * Send one row right now (used for the check-in confirmation, so it does not wait for the next cron minute).
+ * Same lease and retry rules as the scheduler; if it fails, the row stays queued for the scheduler.
+ * CONFIRM ignores quiet hours: it answers something the member just did.
+ */
+export async function sendNow(deps: SchedulerDeps & { line: LineClient; liffId: string }, dedupeKey: string): Promise<string | undefined> {
+  const { db, clock } = deps;
+  const owner = deps.owner ?? crypto.randomUUID();
+  const row = await db.prepare(
+    `UPDATE outbox SET status = 'LEASED', lease_owner = ?1, lease_until = ?2, updated_at = ?3
+     WHERE dedupe_key = ?4 AND status IN ('QUEUED', 'RETRY_WAIT') AND next_attempt_at <= ?3
+       AND (kind = 'CONFIRM' OR NOT ?5)
+     RETURNING *`,
+  ).bind(owner, clock.now() + config.leaseSeconds * 1000, clock.now(), dedupeKey, inQuietHours(clock.now()) ? 1 : 0).first<OutboxRow>();
+  return row ? processRow(deps, deps.line, deps.liffId, owner, row) : undefined;
+}
+
 /* -------------------------------------------------------------- send a row */
 
 type Outcome = "accepted" | "retried" | "failed" | "suppressed" | "cancelled";
@@ -197,7 +214,8 @@ async function loadCtx(db: D1Database, row: OutboxRow): Promise<Ctx | null> {
   const member = await db.prepare("SELECT line_user_id, active FROM members WHERE id = ?").bind(row.member_id)
     .first<{ line_user_id: string | null; active: number }>();
   if (!member) return null;
-  const sql = `SELECT d.shift, d.start_at, d.end_at, d.status, l.name AS location FROM duties d JOIN locations l ON l.id = d.location_id`;
+  const sql = `SELECT d.shift, d.start_at, d.end_at, d.status, d.checked_in_at, d.late, l.name AS location
+               FROM duties d JOIN locations l ON l.id = d.location_id`;
   const { results } = row.duty_id != null
     ? await db.prepare(`${sql} WHERE d.id = ?`).bind(row.duty_id).all<DutyInfo & { status: string }>()
     : await db.prepare(`${sql} WHERE d.member_id = ? AND d.duty_date = ? AND d.status = 'PENDING' ORDER BY d.start_at`)
@@ -224,8 +242,12 @@ async function processRow(deps: SchedulerDeps, line: LineClient, liffId: string,
   if (!ctx || !ctx.member_active) { await finish("CANCELLED", "member_inactive"); return "cancelled"; }
   const duty = ctx.duties[0];
   if (!duty || duty.status === "CANCELLED") { await finish("CANCELLED", row.duty_id ? "duty_cancelled" : "no_pending_duty"); return "cancelled"; }
-  if (duty.status === "CHECKED_IN") { await finish("SUPPRESSED", "already_checked_in"); return "suppressed"; }
-  if (duty.status !== "PENDING" || now >= row.deadline_at) { await finish("FAILED", "deadline_passed"); return "failed"; }
+  if (row.kind === "CONFIRM") {
+    // A confirmation only makes sense while the duty is still checked in.
+    if (duty.status !== "CHECKED_IN") { await finish("CANCELLED", "not_checked_in"); return "cancelled"; }
+  } else if (duty.status === "CHECKED_IN") { await finish("SUPPRESSED", "already_checked_in"); return "suppressed"; }
+  else if (duty.status !== "PENDING") { await finish("FAILED", "deadline_passed"); return "failed"; }
+  if (now >= row.deadline_at) { await finish("FAILED", "deadline_passed"); return "failed"; }
   if (row.attempts >= config.maxAttempts) { await finish("FAILED", "max_attempts"); return "failed"; }
 
   const target = row.target_user_id ?? ctx.line_user_id;

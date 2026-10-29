@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Members and roster</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -13,15 +13,17 @@
 </head>
 <body>
 <main class="page">
-  <h1 class="h1">Members &amp; roster</h1>
+  <h1 class="h1" data-i18n="members.title"></h1>
 
-  <h2 class="h2">Roster import</h2>
+  <h2 class="h2" data-i18n="members.members"></h2>
+  <div id="memberForm" class="cds--tile stack"></div>
+  <div id="members" style="margin-top:1rem"></div>
+
+  <h2 class="h2" data-i18n="members.import"></h2>
   <div class="cds--tile stack">
-    <p class="body secondary">CSV or XLSX, one row per duty: <span class="mono">date, staff_code, location_code, shift, start, end</span>.
-      AM and PM use the configured times; other shifts need start and end. A row with only a date marks a day with no duty.
-      Each file replaces the pending duties of the dates it contains. <a class="cds--link" href="/roster-template.csv">Download template</a></p>
+    <p class="body secondary"><span data-i18n="members.importIntro"></span> <a class="cds--link" href="/roster-template.csv" data-i18n="members.template"></a></p>
     <div class="row">
-      <label class="cds--btn cds--btn--tertiary" for="file">Choose file</label>
+      <label class="cds--btn cds--btn--tertiary" for="file" data-i18n="members.chooseFile"></label>
       <input type="file" id="file" accept=".csv,.xlsx,.xls" hidden>
       <span id="fileName" class="body secondary"></span>
       <span class="grow"></span>
@@ -29,45 +31,44 @@
     </div>
     <div id="importOut"></div>
   </div>
-
-  <h2 class="h2">Members</h2>
-  <div id="memberForm" class="cds--tile stack"></div>
-  <div id="members" style="margin-top:1rem"></div>
 </main>
 <script type="module">
 import { normalizeRows } from "/roster.js";
-import { api, button, dataTable, el, modal, notification, shell, tag, textInput } from "/admin-common.js";
+import { api, button, dataTable, el, hhmm, modal, notification, shell, tag, textInput } from "/admin-common.js";
+import { errText, issueText, t } from "/i18n.js";
 
 await shell("/admin");
+document.title = t("members.title");
 const $ = (id) => document.getElementById(id);
 let staged = null;
 
 /* ---------------------------------------------------------- members */
-const code = textInput({ id: "code", label: "Staff code", helper: "Letters, digits, . _ -", autocapitalize: "none", spellcheck: "false" });
-const name = textInput({ id: "name", label: "Name" });
-const group = textInput({ id: "group", label: "Group (optional)" });
+const CODE = /^[A-Za-z0-9._-]{1,32}$/;
+const code = textInput({ id: "code", label: t("members.code"), helper: t("members.codeHelp"), autocapitalize: "none", spellcheck: "false" });
+const name = textInput({ id: "name", label: t("members.name") });
+const group = textInput({ id: "group", label: t("members.group") });
 const memberMsg = el("div");
-$("memberForm").append(memberMsg, el("div", { class: "row row--fields" }, code, name, group, button("Add or update", { size: "md", onclick: saveMember })));
+$("memberForm").append(memberMsg, el("div", { class: "row row--fields" }, code, name, group, button(t("members.save"), { size: "md", onclick: saveMember })));
 
 async function saveMember() {
   const staffCode = code.input.value.trim(), label = name.input.value.trim();
-  code.invalid(/^[A-Za-z0-9._-]{1,32}$/.test(staffCode) ? null : "Use 1–32 letters, digits, dots, dashes or underscores.");
-  name.invalid(label ? null : "Enter a name.");
-  if (!/^[A-Za-z0-9._-]{1,32}$/.test(staffCode) || !label) return;
+  code.invalid(CODE.test(staffCode) ? null : t("members.needCode"));
+  name.invalid(label ? null : t("members.needName"));
+  if (!CODE.test(staffCode) || !label) return;
   const r = await api("POST", "/admin/api/members", { members: [{ staffCode, label, group: group.input.value.trim() || undefined }] });
-  memberMsg.replaceChildren(r.ok ? notification("success", "Saved", `${staffCode} · ${label}`) : notification("error", "Not saved", r.data.error));
+  memberMsg.replaceChildren(r.ok ? notification("success", t("members.saved"), `${staffCode} · ${label}`) : notification("error", t("members.notSaved"), errText(r.data)));
   if (r.ok) { code.input.value = name.input.value = group.input.value = ""; loadMembers(); }
 }
 
 async function linkCode(m) {
   const r = await api("POST", `/admin/api/members/${m.id}/link-code`);
-  if (!r.ok) { memberMsg.replaceChildren(notification("error", "No code issued", r.data.error)); return; }
+  if (!r.ok) { memberMsg.replaceChildren(notification("error", t("members.noCode"), errText(r.data))); return; }
   await modal({
-    label: m.staff_code, title: `Link code for ${m.label}`, primary: "Done", secondary: null,
+    label: m.staff_code, title: t("members.codeTitle", { name: m.label }), secondary: null,
     body: el("div", { class: "stack" },
-      el("p", { class: "body" }, "Give this code to the member. They open the link page from the OA's welcome message and enter it."),
+      el("p", { class: "body" }, t("members.codeBody")),
       el("div", { class: "code-big" }, r.data.code),
-      el("p", { class: "helper" }, `Works once. Expires at ${new Date(r.data.expiresAt).toLocaleTimeString()}. Issuing a new code cancels this one.`)),
+      el("p", { class: "helper" }, t("members.codeExpiry", { time: hhmm(r.data.expiresAt) }))),
   });
 }
 
@@ -75,15 +76,15 @@ async function loadMembers() {
   const { ok, data } = await api("GET", "/admin/api/members");
   if (!ok) return;
   $("members").replaceChildren(dataTable({
-    title: "Members", description: `${data.members.length} member(s). LINE link and consent status.`,
-    columns: ["Staff code", "Name", "Group", "LINE", "Location consent", ""],
+    title: t("members.members"), description: t("members.count", { n: data.members.length }),
+    columns: [t("col.staffCode"), t("col.name"), t("col.group"), t("col.line"), t("col.consent"), ""],
     rows: data.members.map((m) => [
       el("span", { class: "mono" }, m.staff_code), m.label, m.grp ?? "",
-      m.linked ? tag("Linked", "green") : tag("Not linked", "warm-gray"),
-      m.consent_at ? tag("Given", "green") : tag("Not yet", "gray"),
-      button(m.linked ? "New link code" : "Link code", { kind: "ghost", size: "sm", onclick: () => linkCode(m) }),
+      m.linked ? tag(t("members.linked"), "green") : tag(t("members.notLinked"), "warm-gray"),
+      m.consent_at ? tag(t("members.consentGiven"), "green") : tag(t("members.consentNot"), "gray"),
+      button(t(m.linked ? "members.newLinkCode" : "members.linkCode"), { kind: "ghost", size: "sm", onclick: () => linkCode(m) }),
     ]),
-    empty: "No members yet.",
+    empty: t("members.none"),
   }));
 }
 
@@ -101,30 +102,30 @@ $("file").addEventListener("change", async () => {
   const wb = XLSX.read(await f.arrayBuffer(), { type: "array", raw: isCsv });
   const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
   const parsed = normalizeRows(aoa, { date1904: !!wb.Workbook?.WBProps?.date1904 });
-  if (parsed.errors.length) { out.replaceChildren(notification("error", "File not readable", parsed.errors.join(" · "))); return; }
+  if (parsed.errors.length) { out.replaceChildren(notification("error", t("members.fileUnreadable"), parsed.errors.join(" · "))); return; }
   const r = await api("POST", "/admin/api/imports", { rows: parsed.rows });
   if (!r.ok) {
-    out.replaceChildren(notification("error", "File not accepted", "Fix these rows and choose the file again."),
-      dataTable({ columns: ["Problem"], rows: (r.data.errors ?? [r.data.error]).map((e) => [e]) }));
+    out.replaceChildren(notification("error", t("members.fileRejected"), t("members.fixRows")),
+      dataTable({ columns: [t("members.problem")], rows: (r.data.errors ?? []).map((e) => [issueText(e)]) }));
     return;
   }
   staged = r.data;
   out.replaceChildren(
-    notification("info", `Ready to publish batch #${staged.batchId}`, `${staged.dates.length} date(s): ${staged.dates[0]} to ${staged.dates.at(-1)}`),
+    notification("info", t("members.ready", { id: staged.batchId }), t("sheet.review.body", { dates: staged.dates.length, from: staged.dates[0], to: staged.dates.at(-1) })),
     summary(staged),
-    ...staged.warnings.map((w) => notification("warning", "Kept as is", w)));
-  $("publishSlot").replaceChildren(button("Publish", { onclick: publish }));
+    ...staged.warnings.map((w) => notification("warning", t("sum.keptAsIs"), issueText(w))));
+  $("publishSlot").replaceChildren(button(t("act.publish"), { onclick: publish }));
 });
 
-const summary = (s) => dataTable({ columns: ["New duties", "Unchanged", "Cancelled"], rows: [[String(s.insert), String(s.keep), String(s.cancel)]] });
+const summary = (s) => dataTable({ columns: [t("sum.new"), t("sum.unchanged"), t("sum.cancelled")], rows: [[String(s.insert), String(s.keep), String(s.cancel)]] });
 
 async function publish() {
   if (!staged) return;
   $("publishSlot").replaceChildren();
   const r = await api("POST", `/admin/api/imports/${staged.batchId}/publish`);
   out.replaceChildren(r.ok
-    ? notification("success", "Published", "Messages for these dates are planned automatically.")
-    : notification("error", "Publish failed", (r.data.errors ?? [r.data.error]).join(" · ")));
+    ? notification("success", t("sheet.published"))
+    : notification("error", t("sheet.publishFailed"), (r.data.errors ?? []).map(issueText).join(" · ")));
   if (r.ok) out.append(summary(r.data));
   staged = null;
 }

@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Account</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -12,37 +12,39 @@
 </head>
 <body>
 <main class="page page--narrow">
-  <h1 class="h1">Account</h1>
+  <h1 class="h1" data-i18n="account.title"></h1>
   <div id="intro" class="stack" style="margin-bottom:1.5rem"></div>
   <form id="form" class="stack" novalidate></form>
 </main>
 <script type="module">
 import { api, button, el, notification, shell, textInput } from "/admin-common.js";
+import { errText, t } from "/i18n.js";
 
 const user = await shell("/account");
+document.title = t("account.title");
 const first = user.mustChange;
 document.getElementById("intro").append(
-  el("p", { class: "body secondary" }, `Signed in as ${user.displayName} (${user.username}).`),
-  first ? notification("info", "Set your own password", "You signed in with a temporary password. Choose a new one to continue.") : "");
+  el("p", { class: "body secondary" }, t("account.signedInAs", { name: user.displayName, username: user.username })),
+  first ? notification("info", t("account.first.title"), t("account.first.body")) : "");
 
 const msg = el("div");
-const cur = textInput({ id: "current", label: first ? "Temporary password" : "Current password", type: "password", autocomplete: "current-password" });
-const nw = textInput({ id: "next", label: "New password", type: "password", autocomplete: "new-password", helper: "At least 12 characters. A short sentence works well." });
-const again = textInput({ id: "again", label: "Repeat new password", type: "password", autocomplete: "new-password" });
-const go = button("Change password", { type: "submit" });
+const cur = textInput({ id: "current", label: t(first ? "account.temporary" : "account.current"), type: "password", autocomplete: "current-password" });
+const nw = textInput({ id: "next", label: t("account.new"), type: "password", autocomplete: "new-password", helper: t("account.newHelp", { min: 12 }) });
+const again = textInput({ id: "again", label: t("account.again"), type: "password", autocomplete: "new-password" });
+const go = button(t("account.submit"), { type: "submit" });
 const form = document.getElementById("form");
 form.append(msg, cur, nw, again, go);
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  again.invalid(again.input.value === nw.input.value ? null : "The passwords do not match.");
+  again.invalid(again.input.value === nw.input.value ? null : t("account.mismatch"));
   if (again.input.value !== nw.input.value) return;
   go.disabled = true;
   const { ok, data } = await api("POST", "/admin/api/password", { current: cur.input.value, next: nw.input.value });
   go.disabled = false;
-  if (!ok) { msg.replaceChildren(notification("error", "Password not changed", data.error)); return; }
+  if (!ok) { msg.replaceChildren(notification("error", t("account.failed"), errText(data))); return; }
   form.reset();
-  msg.replaceChildren(notification("success", "Password changed", "Other signed-in sessions were signed out."));
+  msg.replaceChildren(notification("success", t("account.changed.title"), t("account.changed.body")));
   if (first) setTimeout(() => location.replace("/dashboard"), 1200);
 });
 </script>

@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Duty locations</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -16,12 +16,11 @@
 </head>
 <body>
 <main class="page">
-  <h1 class="h1">Locations</h1>
+  <h1 class="h1" data-i18n="loc.title"></h1>
   <div class="row row--fields" id="pickRow"></div>
   <div class="cds--tile stack" style="margin-top:1rem">
     <div class="row row--fields" id="fields"></div>
-    <p class="helper">Click the map to add a geofence point and drag a marker to move it. A check-in passes inside ANY point.
-      Start wide (100 m+) and tighten after the pilot; indoor GPS is often off by 30–80 m.</p>
+    <p class="helper" data-i18n="loc.help"></p>
     <div id="map"></div>
     <div id="points"></div>
     <div id="msg"></div>
@@ -30,8 +29,10 @@
 </main>
 <script type="module">
 import { api, button, dataTable, el, notification, select, shell, textInput } from "/admin-common.js";
+import { errText, t } from "/i18n.js";
 
 await shell("/locations");
+document.title = t("loc.title");
 const $ = (id) => document.getElementById(id);
 const map = L.map("map").setView([13.75, 100.5], 15);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
@@ -39,11 +40,11 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, att
 let data = { locations: [], defaults: { radiusM: 100, allowedAccuracyM: 50 } };
 let points = [], layers = [], editing = null;
 
-const code = textInput({ id: "code", label: "Code", helper: "Used in the roster file, e.g. sk-school", autocapitalize: "none", spellcheck: "false" });
-const name = textInput({ id: "name", label: "Name" });
-const acc = textInput({ id: "acc", label: "Allowed GPS accuracy (m)", type: "number", min: 5, max: 500, helper: "Attempts reporting worse accuracy are rejected" });
+const code = textInput({ id: "code", label: t("loc.code"), helper: t("loc.codeHelp"), autocapitalize: "none", spellcheck: "false" });
+const name = textInput({ id: "name", label: t("loc.name") });
+const acc = textInput({ id: "acc", label: t("loc.accuracy"), type: "number", min: 5, max: 500, helper: t("loc.accuracyHelp") });
 $("fields").append(code, name, acc);
-$("saveSlot").append(button("Save location", { onclick: save }));
+$("saveSlot").append(button(t("loc.save"), { onclick: save }));
 
 function draw() {
   layers.forEach((l) => l.remove());
@@ -62,13 +63,13 @@ function table() {
   const num = (p, k, attrs = {}) => el("input", { class: "cds--text-input", type: "number", step: "any", value: p[k], style: "min-width:7rem",
     onchange: (e) => { p[k] = Number(e.target.value); draw(); }, ...attrs });
   $("points").replaceChildren(dataTable({
-    title: "Geofence points", columns: ["Label", "Latitude", "Longitude", "Radius (m)", ""],
+    title: t("loc.points"), columns: [t("col.label"), t("col.lat"), t("col.lng"), t("col.radius"), ""],
     rows: points.map((p, i) => [
-      el("input", { class: "cds--text-input", value: p.label ?? "", placeholder: "e.g. main gate", onchange: (e) => { p.label = e.target.value; } }),
+      el("input", { class: "cds--text-input", value: p.label ?? "", placeholder: t("loc.labelPlaceholder"), onchange: (e) => { p.label = e.target.value; } }),
       num(p, "lat"), num(p, "lng"), num(p, "radiusM", { min: 10, max: 2000 }),
-      button("Remove", { kind: "danger--ghost", size: "sm", onclick: () => { points.splice(i, 1); draw(); } }),
+      button(t("act.remove"), { kind: "danger--ghost", size: "sm", onclick: () => { points.splice(i, 1); draw(); } }),
     ]),
-    empty: "No points yet. Click the map to add one.",
+    empty: t("loc.noPoints"),
   }));
 }
 
@@ -88,10 +89,10 @@ async function load(selectCode) {
   const r = await api("GET", "/admin/api/locations");
   if (!r.ok) return;
   data = r.data;
-  const pick = select({ id: "pick", label: "Location", value: selectCode ?? "",
-    options: [["", data.locations.length ? "Choose a location" : "No locations yet"], ...data.locations.map((l) => [l.code, `${l.code} · ${l.name}`])] });
+  const pick = select({ id: "pick", label: t("loc.location"), value: selectCode ?? "",
+    options: [["", t(data.locations.length ? "loc.choose" : "loc.noneYet")], ...data.locations.map((l) => [l.code, `${l.code} · ${l.name}`])] });
   pick.input.addEventListener("change", (e) => edit(data.locations.find((l) => l.code === e.target.value)));
-  $("pickRow").replaceChildren(pick, button("New location", { kind: "tertiary", size: "md", onclick: () => { pick.input.value = ""; edit(null); } }));
+  $("pickRow").replaceChildren(pick, button(t("loc.new"), { kind: "tertiary", size: "md", onclick: () => { pick.input.value = ""; edit(null); } }));
   edit(data.locations.find((l) => l.code === selectCode));
 }
 
@@ -99,12 +100,12 @@ map.on("click", (e) => { points.push({ lat: +e.latlng.lat.toFixed(6), lng: +e.la
 
 async function save() {
   const c = code.input.value.trim();
-  code.invalid(/^[A-Za-z0-9._-]{1,32}$/.test(c) ? null : "Use 1–32 letters, digits, dots, dashes or underscores.");
-  name.invalid(name.input.value.trim() ? null : "Enter a name.");
+  code.invalid(/^[A-Za-z0-9._-]{1,32}$/.test(c) ? null : t("members.needCode"));
+  name.invalid(name.input.value.trim() ? null : t("members.needName"));
   if (!/^[A-Za-z0-9._-]{1,32}$/.test(c) || !name.input.value.trim()) return;
-  if (!points.length) { $("msg").replaceChildren(notification("error", "Add at least one point", "Click the map where members check in.")); return; }
+  if (!points.length) { $("msg").replaceChildren(notification("error", t("loc.needPoint.title"), t("loc.needPoint.body"))); return; }
   const r = await api("POST", "/admin/api/locations", { code: c, name: name.input.value.trim(), allowedAccuracyM: Number(acc.input.value), points });
-  $("msg").replaceChildren(r.ok ? notification("success", "Location saved", `${c} · ${points.length} point(s)`) : notification("error", "Not saved", r.data.error));
+  $("msg").replaceChildren(r.ok ? notification("success", t("loc.saved"), t("loc.savedBody", { code: c, n: points.length })) : notification("error", t("loc.notSaved"), errText(r.data)));
   if (r.ok) load(c);
 }
 

@@ -85,7 +85,7 @@ export async function buildToday(db: D1Database, clock: Clock, date?: string) {
       const o = outbox.results.find((r) => r.kind === kind && r.member_id === memberId && (kind === "REMINDER" || r.duty_id === dutyId));
       return o ? { status: o.status, acceptedAt: o.accepted_at, error: o.last_error, attempts: o.attempts } : null;
     };
-    return { REMINDER: pick("REMINDER"), PROMPT: pick("PROMPT"), MISSED: pick("MISSED") };
+    return { REMINDER: pick("REMINDER"), PROMPT: pick("PROMPT"), MISSED: pick("MISSED"), CONFIRM: pick("CONFIRM") };
   };
 
   const rows = duties.results.map((d) => {
@@ -102,16 +102,19 @@ export async function buildToday(db: D1Database, clock: Clock, date?: string) {
   });
 
   const count = (f: (r: (typeof rows)[number]) => boolean) => rows.filter(f).length;
-  const alerts: { level: "high" | "warn"; code: string; detail: string }[] = [];
+  // `detail` is English for logs; pages translate `code` with `params`.
+  const alerts: { level: "high" | "warn"; code: string; detail: string; params?: Record<string, string | number> }[] = [];
   if (!hb) alerts.push({ level: "high", code: "scheduler_never_ran", detail: "no scheduler heartbeat yet" });
   else if (now - hb.last_run_at > config.heartbeatStaleMinutes * MIN) {
-    alerts.push({ level: "high", code: "scheduler_stale", detail: `last run ${Math.round((now - hb.last_run_at) / MIN)} min ago` });
+    const minutes = Math.round((now - hb.last_run_at) / MIN);
+    alerts.push({ level: "high", code: "scheduler_stale", detail: `last run ${minutes} min ago`, params: { minutes } });
   }
-  if (!known.has(today)) alerts.push({ level: "high", code: "roster_unknown_today", detail: `no roster loaded for ${today}` });
-  if (!known.has(addDays(today, 1))) alerts.push({ level: "warn", code: "roster_unknown_tomorrow", detail: `no roster loaded for ${addDays(today, 1)}` });
-  if (failed?.n) alerts.push({ level: "high", code: "push_failed", detail: `${failed.n} push(es) failed since yesterday` });
+  if (!known.has(today)) alerts.push({ level: "high", code: "roster_unknown_today", detail: `no roster loaded for ${today}`, params: { date: today } });
+  const tomorrow = addDays(today, 1);
+  if (!known.has(tomorrow)) alerts.push({ level: "warn", code: "roster_unknown_tomorrow", detail: `no roster loaded for ${tomorrow}`, params: { date: tomorrow } });
+  if (failed?.n) alerts.push({ level: "high", code: "push_failed", detail: `${failed.n} push(es) failed since yesterday`, params: { count: failed.n } });
   const unlinked = new Set(rows.filter((r) => !r.linked).map((r) => r.staffCode));
-  if (unlinked.size) alerts.push({ level: "warn", code: "unlinked_on_duty", detail: [...unlinked].join(", ") });
+  if (unlinked.size) alerts.push({ level: "warn", code: "unlinked_on_duty", detail: [...unlinked].join(", "), params: { codes: [...unlinked].join(", ") } });
 
   return {
     date: day, serverNow: now, rosterKnown: known.has(day),

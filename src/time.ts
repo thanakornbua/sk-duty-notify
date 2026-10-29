@@ -1,4 +1,4 @@
-import { config } from "./config";
+import { config, type Lang } from "./config";
 
 export const MIN = 60_000;
 const DAY = 86_400_000;
@@ -42,10 +42,12 @@ export function afterQuietHours(t: number): number {
   return end > t ? end : bangkokInstant(date, config.quietHours.end, 1);
 }
 
-/** 'Thu 30 Oct 2026' for a Bangkok date. */
-export function dateLabel(date: string): string {
+/** 'Thu 30 Oct 2026' (en) or 'วันศุกร์ที่ 30 ตุลาคม พ.ศ. 2569' (th) for a Bangkok date. */
+export function dateLabel(date: string, lang: Lang = "en"): string {
   const [y, m, d] = date.split("-").map(Number);
-  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  const at = new Date(Date.UTC(y, m - 1, d));
+  if (lang === "th") return new Intl.DateTimeFormat("th-TH", { dateStyle: "full", timeZone: "UTC" }).format(at);
+  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][at.getUTCDay()];
   const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1];
   return `${wd} ${d} ${mon} ${y}`;
 }

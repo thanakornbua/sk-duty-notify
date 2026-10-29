@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<title>Sign in</title>
+<title>SK Duty</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
@@ -11,19 +11,24 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+<div class="lang-corner" id="lang"></div>
 <main class="page page--bare page--narrow">
-  <img class="brand-hero" src="/brand/emblem-192.png" alt="School emblem" width="64" height="64">
-  <p class="helper">SK Duty</p>
-  <h1 class="h1">Sign in</h1>
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" data-i18n="app.name"></p>
+  <h1 class="h1" data-i18n="login.title"></h1>
   <form id="form" class="stack" novalidate></form>
 </main>
 <script type="module">
-import { api, button, el, notification, textInput } from "/admin-common.js";
+import { api, button, el, langSwitch, notification, textInput } from "/admin-common.js";
+import { applyStatic, t } from "/i18n.js";
 
+applyStatic();
+document.title = t("login.title");
+document.getElementById("lang").append(langSwitch());
 const msg = el("div");
-const user = textInput({ id: "username", label: "Username", autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true });
-const pass = textInput({ id: "password", label: "Password", type: "password", autocomplete: "current-password", required: true });
-const go = button("Sign in", { type: "submit", full: true });
+const user = textInput({ id: "username", label: t("login.username"), autocomplete: "username", autocapitalize: "none", spellcheck: "false" });
+const pass = textInput({ id: "password", label: t("login.password"), type: "password", autocomplete: "current-password" });
+const go = button(t("login.submit"), { type: "submit", full: true });
 const form = document.getElementById("form");
 form.append(msg, user, pass, go);
 user.input.focus();
@@ -38,8 +43,8 @@ function next() {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  user.invalid(user.input.value.trim() ? null : "Enter your username.");
-  pass.invalid(pass.input.value ? null : "Enter your password.");
+  user.invalid(user.input.value.trim() ? null : t("login.needUsername"));
+  pass.invalid(pass.input.value ? null : t("login.needPassword"));
   if (!user.input.value.trim() || !pass.input.value) return;
   go.disabled = true;
   msg.replaceChildren();
@@ -48,9 +53,9 @@ form.addEventListener("submit", async (e) => {
   if (ok) { location.replace(data.user.mustChange ? "/account?first=1" : next()); return; }
   pass.input.value = "";
   msg.replaceChildren(data.error === "locked"
-    ? notification("error", "Account locked", `Too many failed attempts. Try again after ${new Date(data.retryAt).toLocaleTimeString()}.`)
-    : data.error === "rate_limited" ? notification("error", "Too many attempts", "Wait a minute and try again.")
-    : notification("error", "Sign-in failed", "Username or password is incorrect."));
+    ? notification("error", t("login.locked.title"), t("login.locked.body", { time: new Date(data.retryAt).toLocaleTimeString() }))
+    : data.error === "rate_limited" ? notification("error", t("login.rate.title"), t("login.rate.body"))
+    : notification("error", t("login.failed.title"), t("login.failed.body")));
 });
 </script>
 </body>

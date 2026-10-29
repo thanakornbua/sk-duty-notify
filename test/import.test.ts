@@ -33,13 +33,15 @@ describe("roster import", () => {
       { date: D, staffCode: "S005", locationCode: "GATE", shift: "AM" },
       { date: D, staffCode: "S005", locationCode: "GATE", shift: "AM" },
     ]);
-    expect(errs.join("\n")).toMatch(/row 1: invalid date/);
-    expect(errs.join("\n")).toMatch(/row 2: unknown staff code "S999"/);
-    expect(errs.join("\n")).toMatch(/row 3: unknown location/);
-    expect(errs.join("\n")).toMatch(/row 4: location "NOPTS" has no geofence point/);
-    expect(errs.join("\n")).toMatch(/row 5: shift "NIGHT" is not predefined/);
-    expect(errs.join("\n")).toMatch(/row 6: end 09:00 must be after start/);
-    expect(errs.join("\n")).toMatch(/row 8: S005 already has shift AM/);
+    expect(errs).toEqual(expect.arrayContaining([
+      { code: "invalid_date", row: 1, value: "2026-02-30" },
+      { code: "unknown_staff", row: 2, value: "S999" },
+      { code: "unknown_location", row: 3, value: "NOWHERE" },
+      { code: "location_without_points", row: 4, value: "NOPTS" },
+      { code: "shift_needs_times", row: 5, value: "NIGHT" },
+      { code: "end_before_start", row: 6, start: "10:00", end: "09:00" },
+      { code: "duplicate_shift", row: 8, value: "S005", shift: "AM", date: D },
+    ]));
     expect((await db.prepare("SELECT COUNT(*) AS n FROM import_batches").first<{ n: number }>())!.n).toBe(0);
   });
 
@@ -47,11 +49,11 @@ describe("roster import", () => {
     expect((await errorsOf([
       { date: D, staffCode: "S001", locationCode: "GATE", shift: "AM" },
       { date: D, staffCode: "S001", locationCode: "GATE", shift: "X", start: "11:00", end: "13:00" },
-    ])).join()).toMatch(/overlaps/);
+    ])).map((e) => e.code)).toEqual(["overlap"]);
     expect((await errorsOf([
       { date: D, staffCode: "", locationCode: "", shift: "" },
       { date: D, staffCode: "S001", locationCode: "GATE", shift: "AM" },
-    ])).join()).toMatch(/both a no-duty row and duty rows/);
+    ])).map((e) => e.code)).toEqual(["mixed_no_duty"]);
   });
 
   it("custom shifts with explicit times, and explicit no-duty dates", async () => {
@@ -82,7 +84,7 @@ describe("roster import", () => {
     await publishRows(amPm([D], 1));
     await db.prepare("UPDATE duties SET status = 'CHECKED_IN' WHERE shift = 'AM'").run();
     const res = await publishRows([{ date: D, staffCode: sc(2), locationCode: "GATE", shift: "AM" }]);
-    expect(res.warnings.join()).toMatch(/CHECKED_IN and not in the file; kept/);
+    expect(res.warnings).toEqual([expect.objectContaining({ code: "resolved_kept", date: D, status: "CHECKED_IN" })]);
     expect((await live()).map((r) => `${r.staff_code} ${r.shift} ${r.status}`)).toEqual(["S001 AM CHECKED_IN", "S002 AM PENDING"]);
   });
 

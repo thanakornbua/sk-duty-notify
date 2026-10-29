@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/png" href="/brand/emblem-32.png">
+<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="page">
+  <h1 class="h1" data-i18n="acc.title"></h1>
+  <p class="body secondary" style="max-width:48rem" data-i18n="acc.intro"></p>
+  <h2 class="h2" data-i18n="acc.new"></h2>
+  <div id="form" class="cds--tile stack"></div>
+  <div id="list" style="margin-top:1.5rem"></div>
+</main>
+<script type="module">
+import { api, button, dataTable, el, modal, notification, shell, tag, textInput } from "/admin-common.js";
+import { dateTime, errText, t } from "/i18n.js";
+
+await shell("/accounts");
+document.title = t("acc.title");
+const $ = (id) => document.getElementById(id);
+const msg = el("div");
+const username = textInput({ id: "u", label: t("acc.username"), helper: t("acc.usernameHelp"), autocapitalize: "none", spellcheck: "false", autocomplete: "off" });
+const display = textInput({ id: "n", label: t("acc.displayName"), autocomplete: "off" });
+$("form").append(msg, el("div", { class: "row row--fields" }, username, display, button(t("acc.create"), { size: "md", onclick: create })));
+
+const showTemp = (u, pw) => modal({
+  title: t("acc.tempTitle", { username: u }), secondary: null,
+  body: el("div", { class: "stack" }, el("p", { class: "body" }, t("acc.tempBody")), el("div", { class: "code-big", style: "letter-spacing:.08em" }, pw)),
+});
+
+async function create() {
+  username.invalid(null); display.invalid(null);
+  const r = await api("POST", "/admin/api/admins", { username: username.input.value.trim(), displayName: display.input.value.trim() });
+  if (!r.ok) {
+    (r.data.error === "invalid_display_name" ? display : username).invalid(errText(r.data));
+    return;
+  }
+  username.input.value = display.input.value = "";
+  await showTemp(r.data.username, r.data.temporaryPassword);
+  load();
+}
+
+async function act(a, path, confirmKey) {
+  if (confirmKey && !(await modal({ title: t(confirmKey, { username: a.username }), body: el("span"), primary: t("act.done"), danger: path === "disable" }))) return;
+  const r = await api("POST", `/admin/api/admins/${a.id}/${path}`);
+  if (!r.ok) { msg.replaceChildren(notification("error", t("acc.failed"), errText(r.data))); return; }
+  if (r.data.temporaryPassword) await showTemp(r.data.username, r.data.temporaryPassword);
+  load();
+}
+
+async function load() {
+  const { ok, data } = await api("GET", "/admin/api/admins");
+  if (!ok) return;
+  $("list").replaceChildren(dataTable({
+    title: t("acc.title"),
+    columns: [t("col.username"), t("col.name"), t("col.status"), t("col.lastLogin"), ""],
+    rows: data.admins.map((a) => {
+      const self = a.id === data.self;
+      return [
+        el("span", { class: "mono" }, a.username), a.displayName,
+        el("div", {}, a.disabled ? tag(t("acc.disabled"), "red") : tag(t("acc.active"), "green"),
+          a.locked ? tag(t("acc.locked"), "magenta") : null, a.mustChange ? tag(t("acc.mustChange"), "warm-gray") : null,
+          self ? tag(t("acc.you"), "blue") : null),
+        a.lastLoginAt ? dateTime(a.lastLoginAt) : el("span", { class: "helper" }, t("common.never")),
+        self ? "" : el("div", { class: "nowrap" },
+          button(t("acc.reset"), { kind: "ghost", size: "sm", onclick: () => act(a, "reset-password", "acc.confirmReset") }),
+          a.disabled ? button(t("acc.enable"), { kind: "ghost", size: "sm", onclick: () => act(a, "enable") })
+            : button(t("acc.disable"), { kind: "danger--ghost", size: "sm", onclick: () => act(a, "disable", "acc.confirmDisable") })),
+      ];
+    }),
+  }));
+}
+load();
+</script>
+</body>
+</html>

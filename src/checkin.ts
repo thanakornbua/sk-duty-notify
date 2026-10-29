@@ -118,6 +118,20 @@ export interface Attempt {
   userAgent: string | null;
 }
 
+export const confirmKey = (dutyId: number) => `C:${dutyId}`;
+
+/**
+ * Outbox row for the check-in confirmation. Only inserted if THIS request's check-in is the one stored
+ * (checked_in_at = now), so a duplicate submit never queues a second message; the dedupe key makes sure anyway.
+ */
+export function queueConfirm(db: D1Database, now: number, dutyId: number) {
+  return db.prepare(
+    `INSERT OR IGNORE INTO outbox (kind, dedupe_key, member_id, duty_date, duty_id, status, due_at, deadline_at, next_attempt_at, created_at, updated_at)
+     SELECT 'CONFIRM', ?1, member_id, duty_date, id, 'QUEUED', ?2, ?3, ?2, ?2, ?2 FROM duties
+     WHERE id = ?4 AND status = 'CHECKED_IN' AND checked_in_at = ?2`,
+  ).bind(confirmKey(dutyId), now, now + 60 * MIN, dutyId);
+}
+
 export interface SubmitOutcome {
   status: number;
   result: CheckinResult;
@@ -126,6 +140,8 @@ export interface SubmitOutcome {
   radiusM?: number;
   allowedAccuracyM?: number;
   duty?: ReturnType<typeof view>;
+  /** Outbox key of the queued confirmation, if one was queued (the caller sends it right away). */
+  confirmKey?: string;
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -231,7 +247,8 @@ export async function submitCheckin(
       `UPDATE duties SET status = 'CHECKED_IN', checked_in_at = ?1, late = ?2, source = 'gps', updated_at = ?1
        WHERE id = ?3 AND status = 'PENDING'`,
     ).bind(now, late, duty.id),
+    ...(config.confirmOnCheckin ? [queueConfirm(db, now, duty.id)] : []),
   ]);
   const fresh = await db.prepare(`${DUTY_SQL} WHERE d.id = ?`).bind(duty.id).first<DutyRow>();
-  return { status: 200, result: "ok", ...detail, duty: view(fresh!, now) };
+  return { status: 200, result: "ok", ...detail, duty: view(fresh!, now), confirmKey: config.confirmOnCheckin ? confirmKey(duty.id) : undefined };
 }

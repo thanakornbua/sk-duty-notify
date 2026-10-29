@@ -105,7 +105,7 @@ describe("admin login", () => {
     const other = cookieOf(await signIn())!;
     const token = cookieOf(await signIn())!;
     expect((await as(token, "GET", "/admin/api/today")).status).toBe(403);
-    expect((await (await as(token, "POST", "/admin/api/password", { current: ADMIN.password, next: "short" })).json() as any).error).toMatch(/at least 12/);
+    expect((await (await as(token, "POST", "/admin/api/password", { current: ADMIN.password, next: "short" })).json() as any).error).toBe("password_too_short");
     expect((await as(token, "POST", "/admin/api/password", { current: ADMIN.password, next: "x-ops.admin-x-long" })).status).toBe(422);
     expect((await as(token, "POST", "/admin/api/password", { current: "wrong", next: "a brand new passphrase" })).status).toBe(422);
     expect((await as(token, "POST", "/admin/api/password", { current: ADMIN.password, next: "a brand new passphrase" })).status).toBe(200);
