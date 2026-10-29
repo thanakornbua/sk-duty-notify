@@ -1,111 +1,138 @@
 <!doctype html>
 <html lang="en">
 <head>
+<title>Duty dashboard</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Duty dashboard</title>
-<link rel="stylesheet" href="/style.css">
-<style>.counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; } .counts .card { margin: 0; } .counts b { font-size: 1.4rem; display: block; } td small { display: block; }</style>
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<main>
-  <nav><a href="/dashboard">Dashboard</a><a href="/admin">Members &amp; roster</a><a href="/locations">Locations</a></nav>
-  <h1>Duty dashboard</h1>
-  <div class="stub">PROTOTYPE: admin access is a STUB shared token, not real authentication.</div>
-  <div class="row">
-    <input type="date" id="date"> <button id="reload">Refresh</button>
-    <span class="muted" id="stamp"></span>
-    <span style="flex:1"></span>
-    <label>Export <input type="date" id="from"> – <input type="date" id="to"></label> <button id="export">CSV</button>
-  </div>
-  <div id="alerts"></div>
-  <div class="counts" id="counts"></div>
-  <h2>Duties</h2>
-  <p class="muted">"Push" is what the LINE API accepted, not whether the person read it. "Member" is what the person did.</p>
-  <div class="scroll"><table><thead><tr><th>Staff</th><th>Shift</th><th>Member</th><th>Last attempt</th><th>Push</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
-  <h2>Anomalies <span class="muted">(review only, nothing is auto-rejected)</span></h2>
+<main class="page">
+  <h1 class="h1">Duty dashboard</h1>
+  <div class="row row--fields" id="controls"></div>
+  <div id="alerts" style="margin-top:1rem"></div>
+  <div class="kpis" id="kpis" style="margin-top:1rem"></div>
+  <h2 class="h2">Duties</h2>
+  <p class="helper" style="margin-bottom:.5rem">"Push" is what the LINE API accepted, not whether the member read it. "Member" is what the member did.</p>
+  <div id="duties"></div>
+  <h2 class="h2">Anomalies</h2>
+  <p class="helper" style="margin-bottom:.5rem">For review only. Nothing is rejected automatically.</p>
   <div id="anomalies"></div>
-  <h2>Attempts with coordinates <button id="showAttempts">Show</button></h2>
-  <div class="scroll"><table><tbody id="attempts"></tbody></table></div>
+  <h2 class="h2">Check-in attempts with coordinates</h2>
+  <div id="attempts"></div>
+  <h2 class="h2">Export</h2>
+  <div class="row row--fields" id="export"></div>
 </main>
 <script type="module">
-import { api, bangkokToday, el, hhmm } from "/admin-common.js";
+import { api, bangkokToday, button, dataTable, el, hhmm, human, modal, notification, shell, tag, textInput } from "/admin-common.js";
 
+await shell("/dashboard");
 const $ = (id) => document.getElementById(id);
-$("date").value = $("from").value = $("to").value = bangkokToday();
-const PUSH = { QUEUED: "queued", LEASED: "sending", RETRY_WAIT: "retrying", API_ACCEPTED: "LINE API accepted", FAILED: "failed", SUPPRESSED: "not needed", CANCELLED: "cancelled" };
+const today = bangkokToday();
+const date = textInput({ id: "date", label: "Date (Bangkok)", type: "date", value: today });
+$("controls").append(date, button("Refresh", { kind: "tertiary", size: "md", onclick: load }), el("span", { id: "stamp", class: "helper" }));
+date.input.addEventListener("change", load);
 
-function memberCell(d) {
+const from = textInput({ id: "from", label: "From", type: "date", value: today });
+const to = textInput({ id: "to", label: "To", type: "date", value: today });
+$("export").append(from, to, button("Download CSV", { kind: "tertiary", size: "md", onclick: exportCsv }));
+
+const PUSH = { QUEUED: ["queued", "gray"], LEASED: ["sending", "blue"], RETRY_WAIT: ["retrying", "warm-gray"], API_ACCEPTED: ["LINE accepted", "green"],
+  FAILED: ["failed", "red"], SUPPRESSED: ["not needed", "cool-gray"], CANCELLED: ["cancelled", "cool-gray"] };
+
+function member(d) {
   if (d.status === "CHECKED_IN") {
-    return el("td", { class: d.late ? "warn" : "ok" }, `${d.late ? "late" : "on time"} ${hhmm(d.checkedInAt)}`,
-      d.source === "override" ? el("small", { class: "muted" }, `override: ${d.overrideNote}`) : "");
+    return el("div", {}, tag(`${d.late ? "Late" : "On time"} ${hhmm(d.checkedInAt)}`, d.late ? "magenta" : "green"),
+      d.source === "override" ? el("span", { class: "helper" }, `Override: ${d.overrideNote}`) : null);
   }
-  return el("td", { class: d.status === "MISSED" ? "bad" : "muted" }, d.status === "MISSED" ? "missed" : "pending");
+  return d.status === "MISSED" ? tag("Missed", "red") : tag("Pending", "gray");
 }
 
-function pushCell(p) {
-  return el("td", {}, ...["REMINDER", "PROMPT", "MISSED"].map((k) => {
+function pushes(p) {
+  return el("div", {}, ["REMINDER", "PROMPT", "MISSED"].map((k) => {
     const x = p[k];
-    if (!x) return "";
-    const cls = x.status === "FAILED" ? "bad" : x.status === "API_ACCEPTED" ? "ok" : "muted";
-    return el("small", { class: cls, title: x.error ?? "" }, `${k.toLowerCase()}: ${PUSH[x.status] ?? x.status}${x.acceptedAt ? " " + hhmm(x.acceptedAt) : ""}${x.status === "FAILED" && x.error ? ` (${x.error})` : ""}`);
+    if (!x) return null;
+    const [label, color] = PUSH[x.status] ?? [x.status, "gray"];
+    return el("div", { title: x.error ?? "" }, el("span", { class: "helper" }, `${k.toLowerCase()} `), tag(label, color),
+      x.status === "FAILED" && x.error ? el("span", { class: "helper" }, human(x.error)) : null);
   }));
 }
 
+function attempt(d) {
+  const a = d.lastAttempt;
+  if (!a) return el("span", { class: "helper" }, "None");
+  return el("div", {}, tag(human(a.reason ? `${a.result} · ${a.reason}` : a.result), a.result === "ok" ? "green" : "red"),
+    el("span", { class: "helper" }, `${hhmm(a.at)} · ${a.distanceM ?? "?"} m · ±${a.accuracyM ?? "?"} m · ${d.attempts} attempt(s)`));
+}
+
 async function load() {
-  const r = await api("GET", `/admin/api/today?date=${$("date").value}`);
-  if (!r.ok) { $("alerts").replaceChildren(el("p", { class: "bad" }, r.data.error ?? "error")); return; }
+  const r = await api("GET", `/admin/api/today?date=${date.input.value}`);
+  if (!r.ok) { $("alerts").replaceChildren(notification("error", "Could not load", r.data.error)); return; }
   const t = r.data;
-  $("stamp").textContent = `as of ${hhmm(t.serverNow)}`;
+  $("stamp").textContent = `Updated ${hhmm(t.serverNow)}`;
   $("alerts").replaceChildren(
-    ...(t.rosterKnown ? [] : [el("div", { class: "card bad" }, `No roster loaded for ${t.date}: status UNKNOWN (not a day off).`)]),
-    ...t.alerts.map((a) => el("div", { class: `card ${a.level === "high" ? "bad" : "warn"}` }, `${a.code}: ${a.detail}`)));
+    ...(t.rosterKnown ? [] : [notification("warning", `No roster loaded for ${t.date}`, "Status is unknown, not a day off.")]),
+    ...t.alerts.filter((a) => !(a.code === "roster_unknown_today" && t.date === today)).map((a) =>
+      notification(a.level === "high" ? "error" : "warning", human(a.code), a.detail)));
   const c = t.counts;
-  $("counts").replaceChildren(...[["Duties", c.total], ["Checked in", c.checkedIn, "ok"], ["Late", c.late, "warn"], ["Pending", c.pending], ["Missed", c.missed, "bad"], ["Rejected attempts", c.rejectedAttempts, "warn"]]
-    .map(([k, v, cls]) => el("div", { class: "card" }, el("b", { class: cls ?? "" }, v), k)));
-  $("rows").replaceChildren(...t.duties.map((d) => el("tr", {},
-    el("td", {}, `${d.staffCode} ${d.label}`, d.linked ? "" : el("small", { class: "warn" }, "LINE not linked")),
-    el("td", {}, `${d.shift} ${hhmm(d.startAt)}–${hhmm(d.endAt)}`, el("small", { class: "muted" }, d.location)),
-    memberCell(d),
-    el("td", {}, d.lastAttempt
-      ? [el("span", { class: d.lastAttempt.result === "ok" ? "ok" : "bad" }, `${d.lastAttempt.result}${d.lastAttempt.reason ? ` (${d.lastAttempt.reason})` : ""}`),
-         el("small", { class: "muted" }, `${hhmm(d.lastAttempt.at)} · ${d.lastAttempt.distanceM ?? "?"} m · ±${d.lastAttempt.accuracyM ?? "?"} m · ${d.attempts} attempt(s)`)]
-      : el("span", { class: "muted" }, "none")),
-    pushCell(d.push),
-    el("td", {}, d.status === "PENDING" || d.status === "MISSED"
-      ? el("button", { onclick: () => override(d) }, "Override") : ""))));
-  $("anomalies").replaceChildren(...(t.anomalies.length ? t.anomalies.map((a) => el("div", { class: "card warn" }, `${a.kind}: ${a.detail} (member ids ${a.memberIds.join(", ")})`))
-    : [el("p", { class: "muted" }, "None.")]));
+  $("kpis").replaceChildren(...[["Duties", c.total], ["Checked in", c.checkedIn], ["Late", c.late], ["Pending", c.pending], ["Missed", c.missed], ["Rejected attempts", c.rejectedAttempts]]
+    .map(([k, v]) => el("div", { class: "cds--tile" }, el("span", { class: "helper" }, k), el("span", { class: "kpi" }, String(v)))));
+  $("duties").replaceChildren(dataTable({
+    columns: ["Member", "Shift", "Member status", "Last attempt", "Push", ""],
+    rows: t.duties.map((d) => [
+      el("div", {}, el("div", {}, d.label), el("span", { class: "helper mono" }, d.staffCode), d.linked ? null : tag("LINE not linked", "warm-gray")),
+      el("div", { class: "nowrap" }, el("div", {}, `${d.shift} ${hhmm(d.startAt)}–${hhmm(d.endAt)}`), el("span", { class: "helper" }, d.location)),
+      member(d), attempt(d), pushes(d.push),
+      d.status === "PENDING" || d.status === "MISSED" ? button("Override", { kind: "ghost", size: "sm", onclick: () => override(d) }) : "",
+    ]),
+    empty: "No duties on this date.",
+  }));
+  $("anomalies").replaceChildren(t.anomalies.length
+    ? dataTable({ columns: ["Kind", "Detail", "Member ids"], rows: t.anomalies.map((a) => [tag(human(a.kind), "purple"), a.detail, a.memberIds.join(", ")]) })
+    : el("p", { class: "body secondary" }, "None."));
+  $("attempts").replaceChildren(button("Show attempts", { kind: "tertiary", size: "sm", onclick: attempts }));
 }
 
 async function override(d) {
-  const note = prompt(`Manual check-in for ${d.staffCode} ${d.shift}. Reason (required, audited):`);
-  if (!note) return;
-  const late = confirm("Record as late? (OK = late, Cancel = on time)");
-  const r = await api("POST", `/admin/api/duties/${d.id}/override`, { note, late });
-  if (!r.ok) alert(r.data.error);
+  const note = el("textarea", { class: "cds--text-area", id: "note", rows: 3, placeholder: "e.g. GPS failed indoors; seen on site by the coordinator" });
+  const late = el("input", { type: "checkbox", class: "cds--checkbox", id: "late" });
+  const ok = await modal({
+    label: `${d.staffCode} · ${d.shift}`, title: "Manual check-in", primary: "Check in",
+    body: el("div", { class: "stack" },
+      el("p", { class: "body" }, "Use this when GPS failed for a legitimate reason. The note is required and audited."),
+      el("div", { class: "cds--form-item" }, el("label", { class: "cds--label", for: "note" }, "Reason"), el("div", { class: "cds--text-area__wrapper" }, note)),
+      el("div", { class: "cds--form-item cds--checkbox-wrapper" }, late, el("label", { class: "cds--checkbox-label", for: "late" }, el("span", { class: "cds--checkbox-label-text" }, "Record as late")))),
+    validate: () => (note.value.trim().length < 3 ? "Enter a reason (at least 3 characters)." : null),
+  });
+  if (!ok) return;
+  const r = await api("POST", `/admin/api/duties/${d.id}/override`, { note: note.value.trim(), late: late.checked });
+  if (!r.ok) $("alerts").prepend(notification("error", "Override failed", r.data.error));
   load();
 }
 
-$("showAttempts").addEventListener("click", async () => {
-  const r = await api("GET", `/admin/api/checkins?date=${$("date").value}`);
+async function attempts() {
+  const r = await api("GET", `/admin/api/checkins?date=${date.input.value}`);
   if (!r.ok) return;
-  $("attempts").replaceChildren(el("tr", {}, ...["Time", "Staff", "Result", "Lat", "Lng", "±m", "Dist m"].map((h) => el("th", {}, h))),
-    ...r.data.attempts.map((a) => el("tr", {}, el("td", {}, hhmm(a.submitted_at)), el("td", {}, a.staff_code ?? "(unknown)"),
-      el("td", {}, `${a.result}${a.reason ? ` (${a.reason})` : ""}`), el("td", {}, a.lat ?? "purged"), el("td", {}, a.lng ?? ""),
-      el("td", {}, a.accuracy_m ?? ""), el("td", {}, a.distance_m ?? ""))));
-});
+  $("attempts").replaceChildren(dataTable({
+    description: "Raw coordinates are visible to admins only and are deleted after 90 days.",
+    columns: ["Time", "Staff", "Result", "Latitude", "Longitude", "Accuracy (m)", "Distance (m)"],
+    rows: r.data.attempts.map((a) => [hhmm(a.submitted_at), a.staff_code ?? "(unknown)",
+      tag(human(a.reason ? `${a.result} · ${a.reason}` : a.result), a.result === "ok" ? "green" : "red"),
+      a.lat ?? "deleted", a.lng ?? "", a.accuracy_m ?? "", a.distance_m ?? ""]),
+    empty: "No attempts on this date.",
+  }));
+}
 
-$("export").addEventListener("click", async () => {
-  const r = await api("GET", `/admin/api/export.csv?from=${$("from").value}&to=${$("to").value}`);
-  if (!r.ok) { alert(r.data.error ?? "export failed"); return; }
-  const a = el("a", { href: URL.createObjectURL(r.data), download: `checkins-${$("from").value}_${$("to").value}.csv` });
+async function exportCsv() {
+  const r = await api("GET", `/admin/api/export.csv?from=${from.input.value}&to=${to.input.value}`);
+  if (!r.ok) { $("alerts").prepend(notification("error", "Export failed", r.data.error)); return; }
+  const a = el("a", { href: URL.createObjectURL(r.data), download: `checkins-${from.input.value}_${to.input.value}.csv` });
   a.click();
   URL.revokeObjectURL(a.href);
-});
+}
 
-$("date").addEventListener("change", load);
-$("reload").addEventListener("click", load);
 load();
 setInterval(load, 30000);
 </script>

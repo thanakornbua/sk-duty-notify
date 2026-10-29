@@ -206,7 +206,7 @@ export async function submitCheckin(
     return reject(400, "bad_coords", "rejected", { nonceId });
   }
 
-  const points = (await db.prepare("SELECT id, lat, lng, radius_m FROM geofence_points WHERE location_id = ?").bind(duty.location_id).all<Point>()).results;
+  const points = (await db.prepare("SELECT id, lat, lng, radius_m FROM geofence_points WHERE location_id = ? AND retired_at IS NULL").bind(duty.location_id).all<Point>()).results;
   const near = nearestPoint(a.lat, a.lng, points);
   if (!near) return reject(500, "location_has_no_points", "rejected", { nonceId });
   const geo = { distanceM: Math.round(near.distanceM * 10) / 10, pointId: near.point.id, nonceId };

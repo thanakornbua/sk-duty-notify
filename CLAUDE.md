@@ -4,7 +4,8 @@ PROTOTYPE of a LINE duty-roster notification system with **GPS-verified check-in
 Keep code small and readable; no abstractions beyond `Clock` and `LineClient`.
 
 ## Stack
-TypeScript, one Cloudflare Worker + D1 (HTTP API, static assets in `public/`, `scheduled()` every minute). vitest with `@cloudflare/vitest-plugin`. No Docker, Redis, or ORM. LIFF SDK and Leaflet from CDNs at pinned versions; SheetJS vendored.
+TypeScript, one Cloudflare Worker + D1 (HTTP API, static assets in `public/`, `scheduled()` every minute). vitest with `@cloudflare/vitest-plugin`. No Docker, Redis, or ORM. LIFF SDK and Leaflet from CDNs at pinned versions; SheetJS and Carbon styles vendored.
+- UI: IBM Carbon Design System (`public/vendor/carbon-styles.min.css`, @carbon/styles 1.118.0) with Carbon class names (`cds--*`) and Carbon tokens only; theme zone `cds--white` / `cds--g100` from `prefers-color-scheme`. Shared builders in `public/admin-common.js`. Build DOM with `el()`, never `innerHTML`.
 
 ## Domain
 - ~150 members; a duty = member + location + Bangkok date + shift (start/end). AM/PM are two duties per person per day.
@@ -21,6 +22,8 @@ TypeScript, one Cloudflare Worker + D1 (HTTP API, static assets in `public/`, `s
 - Check-in verification order (spec 8.2): identity (ID token verified with LINE, never a client-sent user id) -> assignment -> time window on the SERVER clock -> nonce (single use, consumed atomically) -> accuracy -> geofence (inside ANY point). Store every attempt.
 - Keep "LINE API accepted" separate from "member acted". Never name a state "delivered".
 - Raw coordinates only in admin endpoints; purged after `config.locationRetentionDays`.
+- Admin auth: username + password (PBKDF2-SHA256, iterations stored per hash), server-side sessions in an HttpOnly, Secure, SameSite=Strict `__Host-` cookie, Origin check on every non-GET, lockout after failures, forced change of temporary passwords. Admins are created with `scripts/create-admin.mjs`. `ADMIN_TOKEN` is a dev-only bearer for `/dev/*`.
+- Geofence points are never deleted: editing a location retires them (`retired_at`), because check-in attempts reference them.
 - Synthetic data only. No real names, coordinates of real sites, tokens, or secrets in the repo. Secrets via wrangler/cf secrets or `.dev.vars` (gitignored).
 
 ## Scheduler

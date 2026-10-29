@@ -1,0 +1,48 @@
+/* Layout on top of Carbon (vendor/carbon-styles.min.css, @carbon/styles 1.118.0). Colors come from Carbon tokens,
+   so the white (cds--white) and dark (cds--g100) themes both work. Type sizes follow Carbon's type scale. */
+[hidden] { display: none !important; } /* Carbon components set display, which would override the attribute */
+html, body { background: var(--cds-background); color: var(--cds-text-primary); }
+body { margin: 0; font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+.page { max-width: 80rem; margin: 0 auto; padding: 4rem 1rem 4rem; }
+.page.page--bare { padding-top: 2rem; } /* pages without the shell header (login, LIFF); beats the phone rule below */
+.nowrap { white-space: nowrap; }
+.page--narrow { max-width: 30rem; }
+.h1 { font-size: 2rem; line-height: 2.5rem; font-weight: 400; margin: 1rem 0 1.5rem; }          /* heading-05 */
+.h2 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 400; margin: 2.5rem 0 1rem; }      /* heading-03 */
+.h3 { font-size: 1rem; line-height: 1.5rem; font-weight: 600; margin: 0 0 .5rem; }             /* heading-02 */
+.body { font-size: .875rem; line-height: 1.25rem; letter-spacing: .16px; }                      /* body-compact-01 */
+.helper { font-size: .75rem; line-height: 1rem; letter-spacing: .32px; color: var(--cds-text-helper); }
+.secondary { color: var(--cds-text-secondary); }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.stack > * + * { margin-top: 1rem; }
+.row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
+.row > .cds--form-item { flex: 1 1 12rem; margin: 0; }
+/* Rows of form fields: align on the top so helper text below one field does not shift the others; buttons line up
+   with the inputs (label 1rem + .5rem gap) and use the md size (2.5rem, same as an input). */
+.row--fields { align-items: flex-start; }
+.row--fields > .cds--btn { margin-top: 1.5rem; }
+.row--fields > .helper { margin-top: 2.25rem; }
+.grow { flex: 1; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 1px; background: var(--cds-border-subtle-01); border: 1px solid var(--cds-border-subtle-01); }
+.kpis .cds--tile { min-height: 6rem; }
+.kpi { font-size: 2rem; line-height: 2.5rem; font-weight: 300; display: block; }
+.cds--tile { background: var(--cds-layer-01); }
+.cds--inline-notification { max-width: none; margin: 0 0 .5rem; }
+.cds--btn--full { width: 100%; max-width: none; }
+.cds--data-table-container { min-width: 0; }
+.table-scroll { overflow-x: auto; }
+.table-scroll .cds--data-table { min-width: 40rem; } /* scroll sideways on phones instead of squeezing columns */
+.cds--text-area { width: 100%; }
+td .helper { display: block; }
+.code-big { font-family: "IBM Plex Mono", monospace; font-size: 2rem; letter-spacing: .3em; margin: .5rem 0; }
+#map { height: 26rem; border: 1px solid var(--cds-border-subtle-01); }
+/* Carbon hides header nav below 66rem; repeat it under the header on small screens. */
+.mobile-nav { display: none; white-space: nowrap; position: fixed; top: 3rem; left: 0; right: 0; z-index: 7000; background: var(--cds-layer-01); border-bottom: 1px solid var(--cds-border-subtle-01); overflow-x: auto; }
+.mobile-nav a { display: inline-block; padding: .75rem 1rem; color: var(--cds-text-secondary); text-decoration: none; font-size: .875rem; white-space: nowrap; }
+.mobile-nav a[aria-current="page"] { color: var(--cds-text-primary); box-shadow: inset 0 -2px 0 var(--cds-border-interactive); }
+@media (max-width: 65.98rem) {
+  .mobile-nav { display: block; }
+  .page { padding-top: 6.5rem; }
+  .cds--header__global .who { display: none; }
+}
+.cds--header__global { align-items: center; gap: .5rem; padding-right: .5rem; }

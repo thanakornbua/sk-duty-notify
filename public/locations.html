@@ -1,95 +1,111 @@
 <!doctype html>
 <html lang="en">
 <head>
+<title>Duty locations</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Duty locations</title>
-<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
   integrity="sha384-c6Rcwz4e4CITMbu/NBmnNS8yN2sC3cUElMEMfP3vqqKFp7GOYaaBBCqmaWBjmkjb" crossorigin="anonymous">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
   integrity="sha384-NElt3Op+9NBMCYaef5HxeJmU4Xeard/Lku8ek6hoPTvYkQPh3zLIrJP7KiRocsxO" crossorigin="anonymous"></script>
-<style>#map { height: 420px; border-radius: 10px; border: 1px solid var(--line); } .pt input { width: 7.5em; }</style>
 </head>
 <body>
-<main>
-  <nav><a href="/dashboard">Dashboard</a><a href="/admin">Members &amp; roster</a><a href="/locations">Locations</a></nav>
-  <h1>Locations</h1>
-  <div class="stub">PROTOTYPE: admin access is a STUB shared token, not real authentication.</div>
-  <div class="row">
-    <select id="pick"></select>
-    <button id="new">New location</button>
-  </div>
-  <div class="card">
-    <div class="row">
-      <label>Code <input id="code" size="10"></label>
-      <label>Name <input id="name" size="24"></label>
-      <label>Allowed GPS accuracy (m) <input id="acc" type="number" min="5" max="500" style="width:6em"></label>
-    </div>
-    <p class="muted">Click the map to add a geofence point; drag a marker to move it. A check-in passes inside ANY point.</p>
+<main class="page">
+  <h1 class="h1">Locations</h1>
+  <div class="row row--fields" id="pickRow"></div>
+  <div class="cds--tile stack" style="margin-top:1rem">
+    <div class="row row--fields" id="fields"></div>
+    <p class="helper">Click the map to add a geofence point and drag a marker to move it. A check-in passes inside ANY point.
+      Start wide (100 m+) and tighten after the pilot; indoor GPS is often off by 30–80 m.</p>
     <div id="map"></div>
-    <table><thead><tr><th>Label</th><th>Lat</th><th>Lng</th><th>Radius (m)</th><th></th></tr></thead><tbody id="points"></tbody></table>
-    <p><button class="primary" id="save">Save location</button> <span id="out"></span></p>
+    <div id="points"></div>
+    <div id="msg"></div>
+    <div class="row"><span class="grow"></span><span id="saveSlot"></span></div>
   </div>
 </main>
 <script type="module">
-import { api, el } from "/admin-common.js";
+import { api, button, dataTable, el, notification, select, shell, textInput } from "/admin-common.js";
 
+await shell("/locations");
 const $ = (id) => document.getElementById(id);
-const map = L.map("map").setView([13.75, 100.5], 16); // synthetic default view
+const map = L.map("map").setView([13.75, 100.5], 15);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
+
 let data = { locations: [], defaults: { radiusM: 100, allowedAccuracyM: 50 } };
-let points = [], layers = [];
+let points = [], layers = [], editing = null;
+
+const code = textInput({ id: "code", label: "Code", helper: "Used in the roster file, e.g. sk-school", autocapitalize: "none", spellcheck: "false" });
+const name = textInput({ id: "name", label: "Name" });
+const acc = textInput({ id: "acc", label: "Allowed GPS accuracy (m)", type: "number", min: 5, max: 500, helper: "Attempts reporting worse accuracy are rejected" });
+$("fields").append(code, name, acc);
+$("saveSlot").append(button("Save location", { onclick: save }));
 
 function draw() {
   layers.forEach((l) => l.remove());
   layers = [];
-  points.forEach((p, i) => {
+  for (const p of points) {
     const m = L.marker([p.lat, p.lng], { draggable: true }).addTo(map);
-    const c = L.circle([p.lat, p.lng], { radius: p.radiusM }).addTo(map);
+    const c = L.circle([p.lat, p.lng], { radius: p.radiusM, color: "#0f62fe", weight: 2 }).addTo(map);
     m.on("drag", (e) => c.setLatLng(e.latlng));
     m.on("dragend", (e) => { const ll = e.target.getLatLng(); p.lat = +ll.lat.toFixed(6); p.lng = +ll.lng.toFixed(6); table(); });
     layers.push(m, c);
-  });
+  }
   table();
 }
 
 function table() {
-  const num = (p, k) => el("input", { type: "number", step: "any", value: p[k], onchange: (e) => { p[k] = Number(e.target.value); draw(); } });
-  $("points").replaceChildren(...points.map((p, i) => el("tr", { class: "pt" },
-    el("td", {}, el("input", { value: p.label ?? "", onchange: (e) => { p.label = e.target.value; } })),
-    el("td", {}, num(p, "lat")), el("td", {}, num(p, "lng")), el("td", {}, num(p, "radiusM")),
-    el("td", {}, el("button", { onclick: () => { points.splice(i, 1); draw(); } }, "Remove")))));
+  const num = (p, k, attrs = {}) => el("input", { class: "cds--text-input", type: "number", step: "any", value: p[k], style: "min-width:7rem",
+    onchange: (e) => { p[k] = Number(e.target.value); draw(); }, ...attrs });
+  $("points").replaceChildren(dataTable({
+    title: "Geofence points", columns: ["Label", "Latitude", "Longitude", "Radius (m)", ""],
+    rows: points.map((p, i) => [
+      el("input", { class: "cds--text-input", value: p.label ?? "", placeholder: "e.g. main gate", onchange: (e) => { p.label = e.target.value; } }),
+      num(p, "lat"), num(p, "lng"), num(p, "radiusM", { min: 10, max: 2000 }),
+      button("Remove", { kind: "danger--ghost", size: "sm", onclick: () => { points.splice(i, 1); draw(); } }),
+    ]),
+    empty: "No points yet. Click the map to add one.",
+  }));
 }
 
 function edit(loc) {
-  $("code").value = loc?.code ?? "";
-  $("code").disabled = !!loc;
-  $("name").value = loc?.name ?? "";
-  $("acc").value = loc?.allowed_accuracy_m ?? data.defaults.allowedAccuracyM;
+  editing = loc ?? null;
+  code.input.value = loc?.code ?? "";
+  code.input.disabled = !!loc;
+  name.input.value = loc?.name ?? "";
+  acc.input.value = loc?.allowed_accuracy_m ?? data.defaults.allowedAccuracyM;
   points = (loc?.points ?? []).map((p) => ({ label: p.label, lat: p.lat, lng: p.lng, radiusM: p.radius_m }));
+  $("msg").replaceChildren();
   draw();
-  if (points.length) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.3));
+  if (points.length) map.fitBounds(L.featureGroup(layers).getBounds().pad(0.4));
 }
 
 async function load(selectCode) {
   const r = await api("GET", "/admin/api/locations");
   if (!r.ok) return;
   data = r.data;
-  $("pick").replaceChildren(el("option", { value: "" }, "— select —"),
-    ...data.locations.map((l) => el("option", { value: l.code, selected: l.code === selectCode }, `${l.code} · ${l.name}`)));
+  const pick = select({ id: "pick", label: "Location", value: selectCode ?? "",
+    options: [["", data.locations.length ? "Choose a location" : "No locations yet"], ...data.locations.map((l) => [l.code, `${l.code} · ${l.name}`])] });
+  pick.input.addEventListener("change", (e) => edit(data.locations.find((l) => l.code === e.target.value)));
+  $("pickRow").replaceChildren(pick, button("New location", { kind: "tertiary", size: "md", onclick: () => { pick.input.value = ""; edit(null); } }));
   edit(data.locations.find((l) => l.code === selectCode));
 }
 
 map.on("click", (e) => { points.push({ lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6), radiusM: data.defaults.radiusM }); draw(); });
-$("pick").addEventListener("change", (e) => edit(data.locations.find((l) => l.code === e.target.value)));
-$("new").addEventListener("click", () => { $("pick").value = ""; edit(null); });
-$("save").addEventListener("click", async () => {
-  const r = await api("POST", "/admin/api/locations", { code: $("code").value.trim(), name: $("name").value.trim(), allowedAccuracyM: Number($("acc").value), points });
-  $("out").textContent = r.ok ? "Saved." : r.data.error;
-  $("out").className = r.ok ? "ok" : "bad";
-  if (r.ok) load($("code").value.trim());
-});
+
+async function save() {
+  const c = code.input.value.trim();
+  code.invalid(/^[A-Za-z0-9._-]{1,32}$/.test(c) ? null : "Use 1–32 letters, digits, dots, dashes or underscores.");
+  name.invalid(name.input.value.trim() ? null : "Enter a name.");
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(c) || !name.input.value.trim()) return;
+  if (!points.length) { $("msg").replaceChildren(notification("error", "Add at least one point", "Click the map where members check in.")); return; }
+  const r = await api("POST", "/admin/api/locations", { code: c, name: name.input.value.trim(), allowedAccuracyM: Number(acc.input.value), points });
+  $("msg").replaceChildren(r.ok ? notification("success", "Location saved", `${c} · ${points.length} point(s)`) : notification("error", "Not saved", r.data.error));
+  if (r.ok) load(c);
+}
+
 load();
 </script>
 </body>

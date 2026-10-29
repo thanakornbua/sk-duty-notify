@@ -49,6 +49,21 @@ export const config = {
 
   linkCodeTtlMinutes: 15,
 
+  /** Admin login. */
+  auth: {
+    /**
+     * PBKDF2-SHA256 iterations for NEW hashes (each hash records its own count, so this can be raised later).
+     * 20k costs ~5 ms CPU, inside the Workers Free plan's 10 ms. On a paid plan raise to 100k (the Workers maximum).
+     */
+    pbkdf2Iterations: 20_000,
+    minPasswordLength: 12,
+    maxFailedLogins: 5,
+    lockoutMinutes: 15,
+    sessionHours: 12,
+    idleMinutes: 120,
+    cookieName: "__Host-sdn_session",
+  },
+
   /** Scheduler */
   batchSize: 10,
   leaseSeconds: 120,

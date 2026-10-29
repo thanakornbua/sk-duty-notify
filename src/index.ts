@@ -8,13 +8,14 @@ import { runScheduler } from "./scheduler";
 export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
-  /** Optional Workers rate-limit binding, keyed on a hash of the client IP, before any LINE call. */
-  CHECKIN_IP_LIMIT?: RateLimit;
+  /** Optional Workers rate-limit binding, keyed on a hash of the client IP: /api/* (before any LINE call) and admin login. */
+  IP_LIMIT?: RateLimit;
   LINE_CHANNEL_SECRET?: string;
   LINE_CHANNEL_ACCESS_TOKEN?: string;
   /** LINE Login channel id of the LIFF app (the ID token's `aud`). Same provider as the Messaging API channel. */
   LINE_LOGIN_CHANNEL_ID?: string;
   LIFF_ID?: string;
+  /** Dev/perf only: bearer for /dev/* (with ALLOW_TEST_CLOCK). Admin pages use username + password. */
   ADMIN_TOKEN?: string;
   /** "fake" = dev only: in-memory LINE, fake ID tokens accepted. Never set in production. */
   LINE_CLIENT?: string;

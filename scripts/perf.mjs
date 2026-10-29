@@ -68,7 +68,9 @@ async function http(method, path, { body, headers = {}, now } = {}) {
   let json; try { json = JSON.parse(txt); } catch { /* plain text */ }
   return { status: res.status, json, txt };
 }
-const admin = (method, path, body, now) => http(method, path, { body, headers: { authorization: `Bearer ${TOKEN}` }, now });
+// Admin calls use a real login session (cookie + same-origin header), like the admin pages.
+let session = "";
+const admin = (method, path, body, now) => http(method, path, { body, headers: { cookie: session, origin: BASE }, now });
 async function measured(bucket, fn) {
   const before = cpuNs();
   const r = await fn();
@@ -80,6 +82,8 @@ const must = (r, what) => { if (r.status >= 300 && r.status !== 422) throw new E
 /* ---------------------------------------------------------------- main */
 rmSync(PERSIST, { recursive: true, force: true });
 execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "DB", "--local", "--persist-to", PERSIST], { stdio: "ignore" });
+const boot = JSON.parse(execFileSync("node", ["scripts/create-admin.mjs", "perf.admin", "Perf Admin"], { encoding: "utf8" }));
+execFileSync("npx", ["wrangler", "d1", "execute", "DB", "--local", "--persist-to", PERSIST, "--command", boot.sql], { stdio: "ignore" });
 const dev = spawn("npx", ["wrangler", "dev", "--local", "--port", String(PORT), "--persist-to", PERSIST,
   "--var", `ADMIN_TOKEN:${TOKEN}`, "--var", "LINE_CLIENT:fake", "--var", "ALLOW_TEST_CLOCK:1", "--var", "LIFF_ID:perf-liff"],
   { stdio: "ignore", detached: true });
@@ -98,8 +102,13 @@ try {
   const trivial = [];
   for (let i = 0; i < 50; i++) await measured(trivial, () => http("GET", "/api/liff-config"));
 
-  // Setup (unmeasured): 150 members, one site, 10 members on AM + PM.
+  // Setup (unmeasured): sign in, 150 members, one site, 10 members on AM + PM.
   const t0 = bkk(D, "09:00", -2);
+  const loginMs = [];
+  const res = await measured(loginMs, () => fetch(`${BASE}/admin/api/login`, { method: "POST", headers: { "content-type": "application/json", origin: BASE },
+    body: JSON.stringify({ username: "perf.admin", password: boot.temporaryPassword }) }));
+  session = (res.headers.get("set-cookie") ?? "").split(";")[0];
+  must(await admin("POST", "/admin/api/password", { current: boot.temporaryPassword, next: "perf run passphrase 2026" }, t0), "password");
   must(await admin("POST", "/admin/api/members", { members: Array.from({ length: 150 }, (_, i) => ({ staffCode: sc(i + 1), label: `Person ${i + 1}` })) }, t0), "members");
   must(await admin("POST", "/admin/api/locations", { code: "GATE", name: "Main gate", points: [{ ...SITE, radiusM: 100 }] }, t0), "location");
   const rows = Array.from({ length: 10 }, (_, i) => ["AM", "PM"].map((shift) => ({ date: D, staffCode: sc(i + 1), locationCode: "GATE", shift }))).flat();
@@ -135,7 +144,7 @@ try {
       }
     }
     const before = cpuNs();
-    const res = await admin("POST", "/dev/tick", undefined, now);
+    const res = await http("POST", "/dev/tick", { headers: { authorization: `Bearer ${TOKEN}` }, now });
     const cpu = (cpuNs() - before) / 1e6;
     if (res.status !== 200) throw new Error("tick failed: " + res.txt);
     (res.json.claimed ? tickBusy : tickIdle).push(cpu);
@@ -148,6 +157,7 @@ try {
     pushesAccepted: sent, expectedPushes: 10 + 20 + 4 + 4,
     dashboardCounts: today.json.counts,
     trivialRequest: stats(trivial),
+    adminLogin: stats(loginMs),
     link: stats(link),
     checkinStart: stats(start),
     checkinSubmitOk: stats(ok),

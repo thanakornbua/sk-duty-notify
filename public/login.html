@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Sign in</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main class="page page--bare page--narrow">
+  <p class="helper">SK Duty</p>
+  <h1 class="h1">Sign in</h1>
+  <form id="form" class="stack" novalidate></form>
+</main>
+<script type="module">
+import { api, button, el, notification, textInput } from "/admin-common.js";
+
+const msg = el("div");
+const user = textInput({ id: "username", label: "Username", autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true });
+const pass = textInput({ id: "password", label: "Password", type: "password", autocomplete: "current-password", required: true });
+const go = button("Sign in", { type: "submit", full: true });
+const form = document.getElementById("form");
+form.append(msg, user, pass, go);
+user.input.focus();
+
+// Already signed in? Go straight on.
+fetch("/admin/api/me", { credentials: "same-origin" }).then((r) => { if (r.ok) location.replace(next()); });
+
+function next() {
+  const n = new URLSearchParams(location.search).get("next") ?? "";
+  return n.startsWith("/") && !n.startsWith("//") ? n : "/dashboard"; // same-site paths only
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  user.invalid(user.input.value.trim() ? null : "Enter your username.");
+  pass.invalid(pass.input.value ? null : "Enter your password.");
+  if (!user.input.value.trim() || !pass.input.value) return;
+  go.disabled = true;
+  msg.replaceChildren();
+  const { ok, data } = await api("POST", "/admin/api/login", { username: user.input.value.trim(), password: pass.input.value });
+  go.disabled = false;
+  if (ok) { location.replace(data.user.mustChange ? "/account?first=1" : next()); return; }
+  pass.input.value = "";
+  msg.replaceChildren(data.error === "locked"
+    ? notification("error", "Account locked", `Too many failed attempts. Try again after ${new Date(data.retryAt).toLocaleTimeString()}.`)
+    : data.error === "rate_limited" ? notification("error", "Too many attempts", "Wait a minute and try again.")
+    : notification("error", "Sign-in failed", "Username or password is incorrect."));
+});
+</script>
+</body>
+</html>

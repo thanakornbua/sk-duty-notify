@@ -1,4 +1,4 @@
-import { adminAuthorized, handleAdmin } from "./admin";
+import { devAuthorized, handleAdmin } from "./admin";
 import { identify, logUnidentified, recordConsent, startCheckin, submitCheckin } from "./checkin";
 import type { Clock } from "./clock";
 import type { Env } from "./index";
@@ -15,11 +15,11 @@ export async function handleRequest(req: Request, env: Env, clock: Clock, line?:
 
   if (req.method === "POST" && path === "/webhook/line") return handleWebhook(req, env, clock, line);
   if (path.startsWith("/api/")) return handleMemberApi(req, env, clock, line, path);
-  if (path.startsWith("/admin/api/")) return handleAdmin(req, env, clock, path, url);
+  if (path.startsWith("/admin/api/")) return handleAdmin(req, env, clock, path, url, await ipHashOf(req));
 
   // Dev/perf only: needs ALLOW_TEST_CLOCK=1 AND the admin token. Absent from any real deployment.
   if (path.startsWith("/dev/")) {
-    if (env.ALLOW_TEST_CLOCK !== "1" || !adminAuthorized(req, env)) return json({ error: "not found" }, 404);
+    if (env.ALLOW_TEST_CLOCK !== "1" || !devAuthorized(req, env)) return json({ error: "not found" }, 404);
     if (req.method === "POST" && path === "/dev/tick") {
       return json(await runScheduler({ db: env.DB, clock, line, liffId: env.LIFF_ID ?? "dev-liff", rand: () => 0.5 }));
     }
@@ -31,6 +31,11 @@ export async function handleRequest(req: Request, env: Env, clock: Clock, line?:
   return env.ASSETS ? env.ASSETS.fetch(req) : new Response("not found", { status: 404 });
 }
 
+async function ipHashOf(req: Request): Promise<string | null> {
+  const ip = req.headers.get("cf-connecting-ip");
+  return ip ? (await sha256Hex(`ip:${ip}`)).slice(0, 16) : null;
+}
+
 /** Endpoints called from the LIFF pages. Identity always comes from a LINE-verified ID token. */
 async function handleMemberApi(req: Request, env: Env, clock: Clock, line: LineClient | undefined, path: string): Promise<Response> {
   if (req.method === "GET" && path === "/api/liff-config") {
@@ -39,10 +44,9 @@ async function handleMemberApi(req: Request, env: Env, clock: Clock, line: LineC
   if (req.method !== "POST") return json({ error: "not found" }, 404);
   if (!line) return json({ error: "LINE not configured" }, 503);
 
-  const ip = req.headers.get("cf-connecting-ip") ?? "";
-  const ipHash = ip ? (await sha256Hex(`ip:${ip}`)).slice(0, 16) : null;
+  const ipHash = await ipHashOf(req);
   // Before any LINE call: per-IP limit (Workers rate-limit binding, if configured).
-  if (env.CHECKIN_IP_LIMIT && ipHash && !(await env.CHECKIN_IP_LIMIT.limit({ key: ipHash })).success) {
+  if (env.IP_LIMIT && ipHash && !(await env.IP_LIMIT.limit({ key: ipHash })).success) {
     return json({ error: "rate_limited" }, 429);
   }
   const body = await readJson(req);

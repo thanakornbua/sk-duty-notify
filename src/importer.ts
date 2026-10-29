@@ -46,7 +46,7 @@ async function resolveRows(db: D1Database, input: unknown): Promise<Result<{ row
 
   const [members, locations] = await Promise.all([
     db.prepare("SELECT id, staff_code, active FROM members").all<{ id: number; staff_code: string; active: number }>(),
-    db.prepare(`SELECT l.id, l.code, l.active, (SELECT COUNT(*) FROM geofence_points p WHERE p.location_id = l.id) AS points
+    db.prepare(`SELECT l.id, l.code, l.active, (SELECT COUNT(*) FROM geofence_points p WHERE p.location_id = l.id AND p.retired_at IS NULL) AS points
                 FROM locations l`).all<{ id: number; code: string; active: number; points: number }>(),
   ]);
   const memberBy = new Map(members.results.map((m) => [m.staff_code, m]));
@@ -178,7 +178,7 @@ export async function stageImport(db: D1Database, clock: Clock, body: unknown) {
   return { ok: true as const, value: { batchId: batch!.id, contentHash: hash, ...summary(plan) } };
 }
 
-export async function publishImport(db: D1Database, clock: Clock, batchId: number): Promise<Result<ReturnType<typeof summary>>> {
+export async function publishImport(db: D1Database, clock: Clock, batchId: number, actor = "admin"): Promise<Result<ReturnType<typeof summary>>> {
   const batch = await db.prepare("SELECT status, rows_json FROM import_batches WHERE id = ?").bind(batchId)
     .first<{ status: string; rows_json: string }>();
   if (!batch) return { ok: false, errors: ["unknown batch"], status: 404 };
@@ -210,8 +210,8 @@ export async function publishImport(db: D1Database, clock: Clock, batchId: numbe
       "INSERT INTO roster_dates (duty_date, batch_id) VALUES (?, ?) ON CONFLICT (duty_date) DO UPDATE SET batch_id = excluded.batch_id",
     ).bind(d, batchId));
   }
-  stmts.push(db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, 'admin', 'roster_published', ?)")
-    .bind(now, JSON.stringify({ batchId, ...summary(plan) })));
+  stmts.push(db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, ?, 'roster_published', ?)")
+    .bind(now, actor, JSON.stringify({ batchId, ...summary(plan) })));
   await db.batch(stmts);
   return { ok: true, value: summary(plan) };
 }

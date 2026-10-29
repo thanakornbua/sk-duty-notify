@@ -1,5 +1,6 @@
 # Copy to .dev.vars (gitignored). Synthetic placeholders only.
-ADMIN_TOKEN=stub-admin-token
+# Dev/perf only: bearer for /dev/* (needs ALLOW_TEST_CLOCK=1). Admin pages use username + password (scripts/create-admin.mjs).
+ADMIN_TOKEN=dev-token
 # Dev without LINE: in-memory fake client, accepts fake ID tokens "tok:<userId>". Never in production.
 LINE_CLIENT=fake
 ALLOW_TEST_CLOCK=1

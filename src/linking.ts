@@ -22,7 +22,7 @@ export function newLinkCode(): string {
 export const normalizeCode = (s: string) => s.replace(/[\s-]+/g, "").toUpperCase();
 
 /** A new code revokes any unused older one for the same member. Only the hash is stored. */
-export async function issueLinkCode(db: D1Database, clock: Clock, memberId: number) {
+export async function issueLinkCode(db: D1Database, clock: Clock, memberId: number, actor = "admin") {
   const now = clock.now();
   const code = newLinkCode();
   const expiresAt = now + config.linkCodeTtlMinutes * MIN;
@@ -30,8 +30,8 @@ export async function issueLinkCode(db: D1Database, clock: Clock, memberId: numb
     db.prepare("UPDATE link_codes SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL").bind(now, memberId),
     db.prepare("INSERT INTO link_codes (member_id, code_hash, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .bind(memberId, await sha256Hex(code), now, expiresAt),
-    db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, 'admin', 'link_code_issued', ?)")
-      .bind(now, JSON.stringify({ memberId })),
+    db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, ?, 'link_code_issued', ?)")
+      .bind(now, actor, JSON.stringify({ memberId })),
   ]);
   return { code, expiresAt };
 }

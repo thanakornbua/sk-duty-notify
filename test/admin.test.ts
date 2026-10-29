@@ -15,7 +15,7 @@ async function checkIn(n: number, pos = { lat: SITE.lat, lng: SITE.lng, accuracy
 const today = async (date = D) => (await (await admin(line, clock, "GET", `/admin/api/today?date=${date}`)).json()) as any;
 
 describe("admin API", () => {
-  it("all admin routes need the (stub) token", async () => {
+  it("all admin routes need a signed-in session", async () => {
     for (const p of ["/admin/api/today", "/admin/api/members", "/admin/api/checkins", "/admin/api/export.csv?from=2026-03-02"]) {
       expect((await call(line, clock, "GET", p)).status).toBe(401);
     }
@@ -47,9 +47,9 @@ describe("admin API", () => {
     expect((await admin(line, clock, "POST", `/admin/api/duties/${id}/override`, { note: "" })).status).toBe(400);
     await db.prepare("UPDATE duties SET status = 'MISSED' WHERE id = ?").bind(id).run();
     expect((await admin(line, clock, "POST", `/admin/api/duties/${id}/override`, { note: "GPS failed indoors, seen by coordinator" })).status).toBe(200);
-    expect(await db.prepare("SELECT status, source, override_note FROM duties WHERE id = ?").bind(id).first())
-      .toEqual({ status: "CHECKED_IN", source: "override", override_note: "GPS failed indoors, seen by coordinator" });
-    expect((await db.prepare("SELECT event FROM audit_log WHERE event = 'duty_override'").first())).toBeTruthy();
+    expect(await db.prepare("SELECT status, source, override_note, override_by FROM duties WHERE id = ?").bind(id).first())
+      .toEqual({ status: "CHECKED_IN", source: "override", override_note: "GPS failed indoors, seen by coordinator", override_by: "ops.admin" });
+    expect((await db.prepare("SELECT actor FROM audit_log WHERE event = 'duty_override'").first())!.actor).toBe("admin:ops.admin");
     expect((await admin(line, clock, "POST", `/admin/api/duties/${id}/override`, { note: "again" })).status).toBe(409);
   });
 
@@ -84,8 +84,21 @@ describe("admin API", () => {
     expect(hall.points.map((p: any) => p.radius_m)).toEqual([100, 150]);
   });
 
+  it("a location can be edited after check-ins; old attempts keep their original point", async () => {
+    await checkIn(1);
+    const before = await db.prepare("SELECT point_id FROM checkins").first<{ point_id: number }>();
+    const res = await admin(line, clock, "POST", "/admin/api/locations", { code: "GATE", name: "Moved", points: [{ lat: SITE.lat + 0.01, lng: SITE.lng, radiusM: 50 }] });
+    expect(res.status).toBe(200);
+    expect((await db.prepare("SELECT retired_at FROM geofence_points WHERE id = ?").bind(before!.point_id).first())!.retired_at).toBe(clock.now());
+    const list = (await (await admin(line, clock, "GET", "/admin/api/locations")).json()) as any;
+    expect(list.locations.find((l: any) => l.code === "GATE").points.map((p: any) => p.radius_m)).toEqual([50]);
+    // The new geofence applies: the old spot is now outside.
+    expect((await (await checkIn(2)).json() as any).result).toBe("outside_geofence");
+  });
+
   it("members upsert and link codes", async () => {
-    expect((await admin(line, clock, "POST", "/admin/api/members", { members: [{ staffCode: "S100", label: "Person 100" }] })).status).toBe(200);
+    expect((await admin(line, clock, "POST", "/admin/api/members", { members: [{ staffCode: "S100", label: "Person 100" }, { staffCode: "first.la", label: "Dot code" }] })).status).toBe(200);
+    expect((await admin(line, clock, "POST", "/admin/api/members", { members: [{ staffCode: "bad code", label: "x" }] })).status).toBe(400);
     const m = await db.prepare("SELECT id FROM members WHERE staff_code = 'S100'").first<{ id: number }>();
     const r = (await (await admin(line, clock, "POST", `/admin/api/members/${m!.id}/link-code`)).json()) as any;
     expect(r.code).toMatch(/^[A-Z2-9]{8}$/);

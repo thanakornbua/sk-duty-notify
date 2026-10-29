@@ -1,14 +1,16 @@
 import { env } from "cloudflare:workers";
 import { handleRequest } from "../src/app";
+import { hashPassword } from "../src/auth";
 import type { Clock } from "../src/clock";
 import { FixedClock } from "../src/clock";
 import { publishImport, stageImport, type RosterRow } from "../src/importer";
 import { FakeLineClient, fakeIdToken } from "../src/line-fake";
 import { bangkokInstant, MIN } from "../src/time";
+import { sha256Hex } from "../src/util";
 
 export { MIN };
 export const db = env.DB;
-export const TABLES = ["audit_log", "webhook_events", "scheduler_heartbeat", "outbox", "checkins", "nonces", "duties", "roster_dates",
+export const TABLES = ["admin_sessions", "admin_users", "audit_log", "webhook_events", "scheduler_heartbeat", "outbox", "checkins", "nonces", "duties", "roster_dates",
   "import_batches", "geofence_points", "locations", "link_codes", "members"];
 export const D = "2026-03-02"; // default duty date (a Monday)
 export const LIFF = "test-liff";
@@ -21,8 +23,21 @@ export const sc = (n: number) => `S${String(n).padStart(3, "0")}`;
 export const uid = (n: number) => `U${String(n).padStart(3, "0")}`;
 export const token = (n: number) => fakeIdToken(uid(n));
 
+/** Test admin. Low iteration count keeps tests fast; production uses config.auth.pbkdf2Iterations. */
+export const ADMIN = { username: "ops.admin", password: "test-password-123" };
+const ADMIN_SESSION = "test-session-token";
+let adminHash: Promise<string> | undefined;
+
+/** Empty every table, then add one signed-in admin (session cookie ADMIN_SESSION, password already changed). */
 export async function reset() {
-  await db.batch(TABLES.map((t) => db.prepare(`DELETE FROM ${t}`)));
+  adminHash ??= hashPassword(ADMIN.password, 1000);
+  await db.batch([
+    ...TABLES.map((t) => db.prepare(`DELETE FROM ${t}`)),
+    db.prepare("INSERT INTO admin_users (id, username, display_name, password_hash, must_change, created_at) VALUES (1, ?, 'Ops Admin', ?, 0, 0)")
+      .bind(ADMIN.username, await adminHash),
+    db.prepare("INSERT INTO admin_sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, 1, 0, 9e15, 9e15)")
+      .bind(await sha256Hex(ADMIN_SESSION)),
+  ]);
 }
 
 /** n members S001..; linked to U001.. unless listed in `unlinked`; consent given unless `noConsent`. */
@@ -71,8 +86,9 @@ export function call(line: FakeLineClient, clock: Clock, method: string, path: s
   return handleRequest(req, { ...env, LIFF_ID: LIFF }, clock, line);
 }
 
+/** Same-origin request with the test admin's session cookie. */
 export const admin = (line: FakeLineClient, clock: Clock, method: string, path: string, body?: unknown) =>
-  call(line, clock, method, path, body, { authorization: `Bearer ${env.ADMIN_TOKEN}` });
+  call(line, clock, method, path, body, { cookie: `__Host-sdn_session=${ADMIN_SESSION}`, origin: "https://x.test" });
 
 export async function dutyId(member: number, shift = "AM", date = D) {
   const r = await db.prepare("SELECT d.id FROM duties d JOIN members m ON m.id = d.member_id WHERE m.staff_code = ? AND d.shift = ? AND d.duty_date = ? AND d.status != 'CANCELLED'")

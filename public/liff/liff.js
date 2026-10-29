@@ -1,10 +1,11 @@
 // Shared by the LIFF pages. The page never decides who the user is: it sends LINE's ID token and the server verifies it.
+import { notification } from "/admin-common.js";
+
 export const $ = (id) => document.getElementById(id);
 
-export function show(id, text, cls = "") {
-  const e = $(id);
-  e.textContent = text;
-  e.className = cls;
+/** Replace the contents of #id with a Carbon notification (kind: error | warning | success | info), or clear it. */
+export function show(id, kind, title, subtitle = "") {
+  $(id).replaceChildren(...(kind ? [notification(kind, title, subtitle)] : []));
 }
 
 export async function initLiff() {

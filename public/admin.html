@@ -1,100 +1,131 @@
 <!doctype html>
 <html lang="en">
 <head>
+<title>Members and roster</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Roster admin</title>
-<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
 <script src="/vendor/xlsx.full.min.js"></script>
 </head>
 <body>
-<main>
-  <nav><a href="/dashboard">Dashboard</a><a href="/admin">Members &amp; roster</a><a href="/locations">Locations</a></nav>
-  <h1>Members &amp; roster</h1>
-  <div class="stub">PROTOTYPE: admin access is a STUB shared token, not real authentication.</div>
+<main class="page">
+  <h1 class="h1">Members &amp; roster</h1>
 
-  <h2>Roster import</h2>
-  <div class="card">
-    <p class="muted">CSV or XLSX, one row per duty: <code>date, staff_code, location_code, shift, start, end</code>.
-      Shift AM/PM uses the configured times; other shifts need start and end. A row with only a date means "no duty that day".
-      Each file replaces the pending duties of the dates it contains. <a href="/roster-template.csv">Template</a></p>
-    <div class="row"><input type="file" id="file" accept=".csv,.xlsx,.xls"><button id="publish" class="primary" disabled>Publish</button></div>
-    <pre id="importOut"></pre>
+  <h2 class="h2">Roster import</h2>
+  <div class="cds--tile stack">
+    <p class="body secondary">CSV or XLSX, one row per duty: <span class="mono">date, staff_code, location_code, shift, start, end</span>.
+      AM and PM use the configured times; other shifts need start and end. A row with only a date marks a day with no duty.
+      Each file replaces the pending duties of the dates it contains. <a class="cds--link" href="/roster-template.csv">Download template</a></p>
+    <div class="row">
+      <label class="cds--btn cds--btn--tertiary" for="file">Choose file</label>
+      <input type="file" id="file" accept=".csv,.xlsx,.xls" hidden>
+      <span id="fileName" class="body secondary"></span>
+      <span class="grow"></span>
+      <span id="publishSlot"></span>
+    </div>
+    <div id="importOut"></div>
   </div>
 
-  <h2>Members</h2>
-  <div class="card">
-    <p class="muted">Add or update: one per line, <code>staff_code,label,group</code>. Synthetic data only.</p>
-    <textarea id="memberCsv" placeholder="S001,Person 1,Group A"></textarea>
-    <p><button id="saveMembers">Save members</button> <span id="memberOut"></span></p>
-  </div>
-  <div class="scroll"><table><thead><tr><th>Staff</th><th>Label</th><th>Group</th><th>LINE</th><th>Consent</th><th></th></tr></thead><tbody id="members"></tbody></table></div>
+  <h2 class="h2">Members</h2>
+  <div id="memberForm" class="cds--tile stack"></div>
+  <div id="members" style="margin-top:1rem"></div>
 </main>
 <script type="module">
 import { normalizeRows } from "/roster.js";
-import { api, el } from "/admin-common.js";
+import { api, button, dataTable, el, modal, notification, shell, tag, textInput } from "/admin-common.js";
 
+await shell("/admin");
 const $ = (id) => document.getElementById(id);
 let staged = null;
+
+/* ---------------------------------------------------------- members */
+const code = textInput({ id: "code", label: "Staff code", helper: "Letters, digits, . _ -", autocapitalize: "none", spellcheck: "false" });
+const name = textInput({ id: "name", label: "Name" });
+const group = textInput({ id: "group", label: "Group (optional)" });
+const memberMsg = el("div");
+$("memberForm").append(memberMsg, el("div", { class: "row row--fields" }, code, name, group, button("Add or update", { size: "md", onclick: saveMember })));
+
+async function saveMember() {
+  const staffCode = code.input.value.trim(), label = name.input.value.trim();
+  code.invalid(/^[A-Za-z0-9._-]{1,32}$/.test(staffCode) ? null : "Use 1–32 letters, digits, dots, dashes or underscores.");
+  name.invalid(label ? null : "Enter a name.");
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(staffCode) || !label) return;
+  const r = await api("POST", "/admin/api/members", { members: [{ staffCode, label, group: group.input.value.trim() || undefined }] });
+  memberMsg.replaceChildren(r.ok ? notification("success", "Saved", `${staffCode} · ${label}`) : notification("error", "Not saved", r.data.error));
+  if (r.ok) { code.input.value = name.input.value = group.input.value = ""; loadMembers(); }
+}
+
+async function linkCode(m) {
+  const r = await api("POST", `/admin/api/members/${m.id}/link-code`);
+  if (!r.ok) { memberMsg.replaceChildren(notification("error", "No code issued", r.data.error)); return; }
+  await modal({
+    label: m.staff_code, title: `Link code for ${m.label}`, primary: "Done", secondary: null,
+    body: el("div", { class: "stack" },
+      el("p", { class: "body" }, "Give this code to the member. They open the link page from the OA's welcome message and enter it."),
+      el("div", { class: "code-big" }, r.data.code),
+      el("p", { class: "helper" }, `Works once. Expires at ${new Date(r.data.expiresAt).toLocaleTimeString()}. Issuing a new code cancels this one.`)),
+  });
+}
 
 async function loadMembers() {
   const { ok, data } = await api("GET", "/admin/api/members");
   if (!ok) return;
-  $("members").replaceChildren(...data.members.map((m) => {
-    const codeCell = el("td");
-    const btn = el("button", { onclick: async () => {
-      const r = await api("POST", `/admin/api/members/${m.id}/link-code`);
-      codeCell.replaceChildren(r.ok ? el("strong", {}, r.data.code) : el("span", { class: "bad" }, r.data.error),
-        r.ok ? el("span", { class: "muted" }, ` valid until ${new Date(r.data.expiresAt).toLocaleTimeString()}`) : "");
-    } }, m.linked ? "New link code" : "Link code");
-    codeCell.append(btn);
-    return el("tr", {}, el("td", {}, m.staff_code), el("td", {}, m.label), el("td", {}, m.grp ?? ""),
-      el("td", { class: m.linked ? "ok" : "warn" }, m.linked ? "linked" : "not linked"),
-      el("td", {}, m.consent_at ? "yes" : ""), codeCell);
+  $("members").replaceChildren(dataTable({
+    title: "Members", description: `${data.members.length} member(s). LINE link and consent status.`,
+    columns: ["Staff code", "Name", "Group", "LINE", "Location consent", ""],
+    rows: data.members.map((m) => [
+      el("span", { class: "mono" }, m.staff_code), m.label, m.grp ?? "",
+      m.linked ? tag("Linked", "green") : tag("Not linked", "warm-gray"),
+      m.consent_at ? tag("Given", "green") : tag("Not yet", "gray"),
+      button(m.linked ? "New link code" : "Link code", { kind: "ghost", size: "sm", onclick: () => linkCode(m) }),
+    ]),
+    empty: "No members yet.",
   }));
 }
 
-$("saveMembers").addEventListener("click", async () => {
-  const members = $("memberCsv").value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
-    const [staffCode, label, group] = l.split(",").map((s) => s?.trim());
-    return { staffCode, label, group: group || undefined };
-  });
-  const r = await api("POST", "/admin/api/members", { members });
-  $("memberOut").textContent = r.ok ? `Saved ${r.data.count}.` : r.data.error;
-  $("memberOut").className = r.ok ? "ok" : "bad";
-  if (r.ok) loadMembers();
-});
-
+/* ----------------------------------------------------------- import */
+const out = $("importOut");
 $("file").addEventListener("change", async () => {
   const f = $("file").files[0];
-  $("publish").disabled = true;
+  $("publishSlot").replaceChildren();
   staged = null;
+  out.replaceChildren();
   if (!f) return;
+  $("fileName").textContent = f.name;
   const isCsv = /\.csv$/i.test(f.name);
   // CSV is read raw so dates stay as typed; XLSX date cells arrive as serials.
   const wb = XLSX.read(await f.arrayBuffer(), { type: "array", raw: isCsv });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
   const parsed = normalizeRows(aoa, { date1904: !!wb.Workbook?.WBProps?.date1904 });
-  if (parsed.errors.length) { $("importOut").textContent = parsed.errors.join("\n"); return; }
+  if (parsed.errors.length) { out.replaceChildren(notification("error", "File not readable", parsed.errors.join(" · "))); return; }
   const r = await api("POST", "/admin/api/imports", { rows: parsed.rows });
-  if (!r.ok) { $("importOut").textContent = "Not accepted:\n" + (r.data.errors ?? [r.data.error]).join("\n"); return; }
+  if (!r.ok) {
+    out.replaceChildren(notification("error", "File not accepted", "Fix these rows and choose the file again."),
+      dataTable({ columns: ["Problem"], rows: (r.data.errors ?? [r.data.error]).map((e) => [e]) }));
+    return;
+  }
   staged = r.data;
-  $("importOut").textContent = `Staged batch #${staged.batchId}: ${staged.dates.length} date(s) ${staged.dates[0]} … ${staged.dates.at(-1)}\n` +
-    `new duties: ${staged.insert}, unchanged: ${staged.keep}, cancelled: ${staged.cancel}` +
-    (staged.warnings.length ? `\nWarnings:\n${staged.warnings.join("\n")}` : "");
-  $("publish").disabled = false;
+  out.replaceChildren(
+    notification("info", `Ready to publish batch #${staged.batchId}`, `${staged.dates.length} date(s): ${staged.dates[0]} to ${staged.dates.at(-1)}`),
+    summary(staged),
+    ...staged.warnings.map((w) => notification("warning", "Kept as is", w)));
+  $("publishSlot").replaceChildren(button("Publish", { onclick: publish }));
 });
 
-$("publish").addEventListener("click", async () => {
+const summary = (s) => dataTable({ columns: ["New duties", "Unchanged", "Cancelled"], rows: [[String(s.insert), String(s.keep), String(s.cancel)]] });
+
+async function publish() {
   if (!staged) return;
-  $("publish").disabled = true;
+  $("publishSlot").replaceChildren();
   const r = await api("POST", `/admin/api/imports/${staged.batchId}/publish`);
-  $("importOut").textContent += r.ok
-    ? `\n\nPublished: ${r.data.insert} new, ${r.data.keep} unchanged, ${r.data.cancel} cancelled.`
-    : `\n\nPublish failed:\n${(r.data.errors ?? [r.data.error]).join("\n")}`;
+  out.replaceChildren(r.ok
+    ? notification("success", "Published", "Messages for these dates are planned automatically.")
+    : notification("error", "Publish failed", (r.data.errors ?? [r.data.error]).join(" · ")));
+  if (r.ok) out.append(summary(r.data));
   staged = null;
-});
+}
 
 loadMembers();
 </script>

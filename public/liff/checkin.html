@@ -1,149 +1,131 @@
 <!doctype html>
 <html lang="en">
 <head>
+<title>Duty check-in</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Duty check-in</title>
-<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
 <script src="https://static.line-scdn.net/liff/edge/versions/2.24.0/sdk.js"></script>
 </head>
 <body>
-<main class="narrow">
-  <h1>Duty check-in</h1>
-  <p id="who" class="muted"></p>
-  <section id="consent" class="card" hidden>
-    <h2>Location notice</h2>
-    <p id="consentText"></p>
-    <button class="primary big" id="accept">I understand, continue</button>
-  </section>
-  <section id="duties"></section>
-  <section id="action" hidden>
-    <button class="primary big" id="checkin">Check in</button>
-    <p id="hint" class="muted"></p>
-  </section>
-  <p id="msg" role="status"></p>
-  <p><button id="refresh" hidden>Refresh</button></p>
+<main class="page page--bare page--narrow">
+  <p class="helper" id="who">SK Duty</p>
+  <h1 class="h1">Duty check-in</h1>
+  <div id="consent" class="cds--tile stack" hidden>
+    <h2 class="h3">Location notice</h2>
+    <p class="body" id="consentText"></p>
+    <div id="acceptSlot"></div>
+  </div>
+  <div id="duties" class="stack"></div>
+  <div id="action" class="stack" style="margin-top:1.5rem" hidden>
+    <div id="checkinSlot"></div>
+    <p class="helper" id="hint"></p>
+  </div>
+  <div id="msg" style="margin-top:1rem"></div>
+  <div id="refreshSlot"></div>
 </main>
 <script type="module">
+import { button, el, tag } from "/admin-common.js";
 import { $, api, hhmm, initLiff, show } from "./liff.js";
 
-const STATUS = { PENDING: "Not checked in", CHECKED_IN: "Checked in", MISSED: "Missed" };
 const REASONS = {
-  too_early: "Check-in is not open yet.",
-  too_late: "The check-in window for this duty has closed.",
-  nonce_used: "This attempt was already used. Tap Try again.",
-  nonce_expired: "This page was open too long. Tap Try again.",
-  bad_nonce: "Please tap Try again.",
-  not_your_duty: "This duty is not assigned to you.",
-  duty_cancelled: "This duty was cancelled.",
-  rate_limited: "Too many attempts. Wait a few minutes.",
-  no_consent: "Please accept the location notice first.",
-  not_linked: "Your LINE account is not linked yet.",
-  bad_coords: "Your phone did not return a usable location.",
-  line_unavailable: "LINE could not be reached. Try again in a moment.",
+  too_early: ["Not open yet", "Check-in for this duty has not opened."],
+  too_late: ["Closed", "The check-in window for this duty has closed."],
+  nonce_used: ["Try again", "This attempt was already used."],
+  nonce_expired: ["Try again", "The page was open too long."],
+  bad_nonce: ["Try again", ""],
+  not_your_duty: ["Not your duty", "This duty is not assigned to you."],
+  duty_cancelled: ["Cancelled", "This duty was cancelled."],
+  rate_limited: ["Too many attempts", "Wait a few minutes."],
+  no_consent: ["Notice not accepted", "Please accept the location notice first."],
+  bad_coords: ["No usable location", "Your phone did not return a usable location."],
+  line_unavailable: ["LINE unavailable", "Try again in a moment."],
 };
 let state = null, skew = 0, timer = null;
+const checkin = button("Check in", { full: true });
+$("checkinSlot").append(checkin);
+$("acceptSlot").append(button("I understand, continue", { full: true, onclick: async () => { await api("/api/consent"); await load(); } }));
 
 async function load() {
-  show("msg", "");
   const { status, data } = await api("/api/checkin/start");
   if (status === 403 && data.error === "not_linked") {
-    show("msg", "Your LINE account is not linked to a staff member yet. Open the link page from the chat welcome message.", "warn");
+    show("msg", "warning", "Not linked yet", "Your LINE account is not linked to a staff member. Open the link page from the OA's welcome message.");
     return;
   }
-  if (status !== 200) { show("msg", REASONS[data.error] ?? `Error (${data.error ?? status}).`, "bad"); $("refresh").hidden = false; return; }
+  if (status !== 200) {
+    const [t, s] = REASONS[data.error] ?? ["Error", data.error ?? String(status)];
+    show("msg", "error", t, s);
+    $("refreshSlot").replaceChildren(button("Refresh", { kind: "tertiary", full: true, onclick: () => location.reload() }));
+    return;
+  }
   state = data;
   skew = data.serverNow - Date.now();
-  $("who").textContent = `${data.member.label} (${data.member.staffCode})`;
+  $("who").textContent = `${data.member.label} · ${data.member.staffCode}`;
   $("consent").hidden = !data.needsConsent;
   $("consentText").textContent = data.consentText;
   render();
 }
 
 function render() {
-  const box = $("duties");
-  box.replaceChildren();
-  if (!state.duties.length) box.append(card("No duty today.", "muted"));
-  for (const d of state.duties) {
-    const c = card(`${d.shift}  ${hhmm(d.startAt)}–${hhmm(d.endAt)}  ·  ${d.location}`);
-    const s = document.createElement("div");
-    s.className = d.status === "CHECKED_IN" ? "ok" : d.status === "MISSED" ? "bad" : "muted";
-    s.textContent = d.status === "CHECKED_IN"
-      ? `Checked in at ${hhmm(d.checkedInAt)}${d.late ? " (late)" : ""}`
-      : `${STATUS[d.status] ?? d.status} · check-in ${hhmm(d.opensAt)}–${hhmm(d.closesAt)}`;
-    c.append(s);
-    box.append(c);
-  }
+  $("duties").replaceChildren(...(state.duties.length ? state.duties.map((d) => el("div", { class: "cds--tile" },
+    el("div", { class: "h3" }, `${d.shift} · ${hhmm(d.startAt)}–${hhmm(d.endAt)}`),
+    el("p", { class: "body secondary" }, d.location),
+    el("div", { style: "margin-top:.5rem" }, d.status === "CHECKED_IN"
+      ? tag(`Checked in ${hhmm(d.checkedInAt)}${d.late ? " · late" : ""}`, d.late ? "magenta" : "green")
+      : d.status === "MISSED" ? tag("Missed", "red")
+      : tag(`Check-in ${hhmm(d.opensAt)}–${hhmm(d.closesAt)}`, "gray"))))
+    : [el("p", { class: "body secondary" }, "No duty today.")]));
   const cur = state.current && state.duties.find((d) => d.id === state.current.dutyId);
   $("action").hidden = !cur || state.needsConsent;
   clearInterval(timer);
-  if (cur) {
-    const tickBtn = () => {
-      const now = Date.now() + skew;
-      const open = now >= cur.opensAt && now <= cur.closesAt;
-      $("checkin").disabled = !open;
-      $("hint").textContent = open ? `${cur.shift} at ${cur.location}. Be on site, outdoors if possible.` : `Check-in opens at ${hhmm(cur.opensAt)}.`;
-    };
-    tickBtn();
-    timer = setInterval(tickBtn, 5000);
-  }
+  if (!cur) return;
+  const tick = () => {
+    const now = Date.now() + skew;
+    const open = now >= cur.opensAt && now <= cur.closesAt;
+    checkin.disabled = !open;
+    $("hint").textContent = open ? `${cur.shift} at ${cur.location}. Be on site, outdoors if you can.` : `Check-in opens at ${hhmm(cur.opensAt)}.`;
+  };
+  tick();
+  timer = setInterval(tick, 5000);
 }
 
-function card(text, cls = "") {
-  const c = document.createElement("div");
-  c.className = `card ${cls}`;
-  const t = document.createElement("strong");
-  t.textContent = text;
-  c.append(t);
-  return c;
-}
+const position = () => new Promise((resolve, reject) =>
+  navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }));
 
-function position() {
-  return new Promise((resolve, reject) =>
-    navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }));
-}
-
-$("accept").addEventListener("click", async () => {
-  await api("/api/consent");
-  await load();
-});
-
-$("checkin").addEventListener("click", async () => {
-  $("checkin").disabled = true;
-  show("msg", "Getting your location…", "muted");
+checkin.addEventListener("click", async () => {
+  checkin.disabled = true;
+  show("msg", "info", "Getting your location…");
   let pos;
   try {
     pos = await position();
   } catch (e) {
-    show("msg", e.code === 1
-      ? "Location permission is off. Allow location for LINE in your phone settings (and turn on Precise Location), then try again."
-      : "Could not get your location. Move outdoors or near a window and try again.", "bad");
-    $("checkin").disabled = false;
+    show("msg", "error", e.code === 1 ? "Location is off" : "No location",
+      e.code === 1 ? "Allow location for LINE in your phone settings (and turn on Precise Location), then try again."
+        : "Move outdoors or near a window and try again.");
+    checkin.disabled = false;
     return;
   }
-  show("msg", "Checking…", "muted");
+  show("msg", "info", "Checking…");
   const { coords } = pos;
   const { data } = await api("/api/checkin/submit", {
     dutyId: state.current.dutyId, nonce: state.current.nonce,
     lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, clientTs: Date.now(),
   });
   const r = data.result;
-  let text, cls = "bad";
-  if (r === "ok") { text = data.reason === "already_checked_in" ? "You are already checked in." : `Checked in${data.duty?.late ? " (late)" : ""}.`; cls = "ok"; }
-  else if (r === "outside_geofence") text = `You are about ${Math.round(data.distanceM)} m from the duty point (allowed ${data.radiusM} m). Move closer and try again.`;
-  else if (r === "low_accuracy") text = `Location is too imprecise (±${Math.round(coords.accuracy)} m, need ±${data.allowedAccuracyM} m). Go outdoors, turn on Precise Location, and try again.`;
-  else text = REASONS[data.reason] ?? `Not accepted (${data.reason ?? r}).`;
   await load(); // fresh nonce for the next try, fresh status
-  show("msg", text, cls);
-  if (r !== "ok") $("checkin").textContent = "Try again";
+  if (r === "ok") show("msg", "success", data.reason === "already_checked_in" ? "Already checked in" : `Checked in${data.duty?.late ? " (late)" : ""}`);
+  else if (r === "outside_geofence") show("msg", "error", "Too far from the duty point", `About ${Math.round(data.distanceM)} m away; allowed ${data.radiusM} m. Move closer and try again.`);
+  else if (r === "low_accuracy") show("msg", "error", "Location not precise enough", `±${Math.round(coords.accuracy)} m; need ±${data.allowedAccuracyM} m. Go outdoors, turn on Precise Location, and try again.`);
+  else { const [t, s] = REASONS[data.reason] ?? ["Not accepted", data.reason ?? r]; show("msg", "error", t, s); }
+  if (r !== "ok") checkin.textContent = "Try again";
 });
-
-$("refresh").addEventListener("click", () => location.reload());
 
 try {
   if (await initLiff()) await load();
 } catch (e) {
-  show("msg", `Could not start: ${e.message}`, "bad");
+  show("msg", "error", "Could not start", e.message);
 }
 </script>
 </body>

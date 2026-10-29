@@ -1,3 +1,4 @@
+import { changePassword, clearCookie, currentAdmin, login, logout, sessionCookie, type AdminUser } from "./auth";
 import type { Clock } from "./clock";
 import { config } from "./config";
 import type { Env } from "./index";
@@ -7,21 +8,52 @@ import { attemptsFor, buildToday, exportCsv } from "./report";
 import { bangkokDateOf } from "./time";
 import { isStr, json, readJson } from "./util";
 
-/** STUB admin auth: one shared bearer token. Replace before real use (open question: LINE Login / password / SSO). */
-export function adminAuthorized(req: Request, env: Env): boolean {
+/** Dev/perf only (/dev/*): the ADMIN_TOKEN bearer. Admin pages and /admin/api use the login session instead. */
+export function devAuthorized(req: Request, env: Env): boolean {
   if (!env.ADMIN_TOKEN) return false;
   return req.headers.get("authorization") === `Bearer ${env.ADMIN_TOKEN}`;
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const CODE_RE = /^[A-Za-z0-9_-]{1,32}$/;
-const audit = (db: D1Database, at: number, event: string, detail: unknown) =>
-  db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, 'admin', ?, ?)").bind(at, event, JSON.stringify(detail));
+/** State-changing requests must come from our own pages (on top of the SameSite=Strict cookie). */
+function sameOrigin(req: Request): boolean {
+  return req.method === "GET" || req.headers.get("origin") === new URL(req.url).origin;
+}
 
-export async function handleAdmin(req: Request, env: Env, clock: Clock, path: string, url: URL): Promise<Response> {
-  if (!adminAuthorized(req, env)) return json({ error: "unauthorized (stub admin token)" }, 401);
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Staff and location codes. Dots allowed (e.g. "first.la"). */
+const CODE_RE = /^[A-Za-z0-9._-]{1,32}$/;
+
+export async function handleAdmin(req: Request, env: Env, clock: Clock, path: string, url: URL, ipHash: string | null): Promise<Response> {
   const db = env.DB;
   const now = clock.now();
+  if (!sameOrigin(req)) return json({ error: "cross-origin request refused" }, 403);
+
+  if (req.method === "POST" && path === "/admin/api/login") {
+    if (env.IP_LIMIT && ipHash && !(await env.IP_LIMIT.limit({ key: `login:${ipHash}` })).success) return json({ error: "rate_limited" }, 429);
+    const b = await readJson(req);
+    const res = await login(db, clock, b?.username, b?.password, { ipHash, userAgent: req.headers.get("user-agent") });
+    if (!res.ok) return json({ error: res.error, retryAt: res.retryAt }, res.error === "locked" ? 429 : 401);
+    return json({ user: me(res.user) }, 200, { "set-cookie": sessionCookie(res.token) });
+  }
+
+  const admin = await currentAdmin(db, clock, req);
+  if (!admin) return json({ error: "not_signed_in" }, 401, { "set-cookie": clearCookie() });
+  if (req.method === "GET" && path === "/admin/api/me") return json({ user: me(admin) });
+  if (req.method === "POST" && path === "/admin/api/logout") {
+    await logout(db, clock, admin);
+    return json({ ok: true }, 200, { "set-cookie": clearCookie() });
+  }
+  if (req.method === "POST" && path === "/admin/api/password") {
+    const b = await readJson(req);
+    const res = await changePassword(db, clock, admin, b?.current, b?.next);
+    return res.ok ? json({ ok: true }) : json({ error: res.error }, 422);
+  }
+  // A temporary password must be replaced before anything else.
+  if (admin.must_change) return json({ error: "must_change_password" }, 403);
+
+  const actor = `admin:${admin.username}`;
+  const audit = (at: number, event: string, detail: unknown) =>
+    db.prepare("INSERT INTO audit_log (at, actor, event, detail) VALUES (?, ?, ?, ?)").bind(at, actor, event, JSON.stringify(detail));
   const route = `${req.method} ${path.replace(/\/\d+(?=\/|$)/g, "/:id")}`;
   const id = Number(/\/(\d+)(?:\/|$)/.exec(path)?.[1]);
 
@@ -38,25 +70,25 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       const list = body?.members;
       if (!Array.isArray(list) || !list.length || list.length > 1000) return json({ error: "expected {members: [...]} (1-1000)" }, 400);
       const bad = list.findIndex((m) => !CODE_RE.test(m?.staffCode ?? "") || !isStr(m?.label, 100));
-      if (bad >= 0) return json({ error: `member ${bad + 1}: staffCode [A-Za-z0-9_-]{1,32} and label (1-100 chars) required` }, 400);
+      if (bad >= 0) return json({ error: `member ${bad + 1}: staff code (letters, digits, . _ -, max 32) and name (1-100 chars) required` }, 400);
       await db.batch([
         ...list.map((m) => db.prepare(
           `INSERT INTO members (staff_code, label, grp, active, created_at) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (staff_code) DO UPDATE SET label = excluded.label, grp = excluded.grp, active = excluded.active`,
         ).bind(m.staffCode, m.label, typeof m.group === "string" ? m.group.slice(0, 50) : null, m.active === false ? 0 : 1, now)),
-        audit(db, now, "members_upserted", { count: list.length }),
+        audit(now, "members_upserted", { count: list.length }),
       ]);
       return json({ ok: true, count: list.length });
     }
     case "POST /admin/api/members/:id/link-code": {
       const m = await db.prepare("SELECT id FROM members WHERE id = ? AND active = 1").bind(id).first();
       if (!m) return json({ error: "unknown or inactive member" }, 404);
-      return json(await issueLinkCode(db, clock, id), 201);
+      return json(await issueLinkCode(db, clock, id, actor), 201);
     }
     case "POST /admin/api/members/:id/unlink": {
       await db.batch([
         db.prepare("UPDATE members SET line_user_id = NULL, linked_at = NULL WHERE id = ?").bind(id),
-        audit(db, now, "member_unlinked", { memberId: id }),
+        audit(now, "member_unlinked", { memberId: id }),
       ]);
       return json({ ok: true });
     }
@@ -64,7 +96,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
     case "GET /admin/api/locations": {
       const [locs, pts] = await Promise.all([
         db.prepare("SELECT id, code, name, allowed_accuracy_m, active FROM locations ORDER BY code").all<{ id: number }>(),
-        db.prepare("SELECT id, location_id, label, lat, lng, radius_m FROM geofence_points ORDER BY id").all<{ location_id: number }>(),
+        db.prepare("SELECT id, location_id, label, lat, lng, radius_m FROM geofence_points WHERE retired_at IS NULL ORDER BY id").all<{ location_id: number }>(),
       ]);
       return json({
         defaults: { radiusM: config.defaultRadiusM, allowedAccuracyM: config.defaultAllowedAccuracyM },
@@ -93,11 +125,11 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
          RETURNING id`,
       ).bind(b.code, b.name, Math.round(acc), b.active === false ? 0 : 1).first<{ id: number }>();
       await db.batch([
-        db.prepare("DELETE FROM geofence_points WHERE location_id = ?").bind(loc!.id),
+        db.prepare("UPDATE geofence_points SET retired_at = ? WHERE location_id = ? AND retired_at IS NULL").bind(now, loc!.id),
         ...points.map((p: { lat: number; lng: number; radiusM?: number; label?: string }) =>
           db.prepare("INSERT INTO geofence_points (location_id, label, lat, lng, radius_m) VALUES (?, ?, ?, ?, ?)")
             .bind(loc!.id, typeof p.label === "string" ? p.label.slice(0, 50) : null, p.lat, p.lng, Math.round(p.radiusM ?? config.defaultRadiusM))),
-        audit(db, now, "location_saved", { code: b.code, points: points.length, allowedAccuracyM: acc }),
+        audit(now, "location_saved", { code: b.code, points: points.length, allowedAccuracyM: acc }),
       ]);
       return json({ ok: true, id: loc!.id });
     }
@@ -107,7 +139,7 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       return res.ok ? json(res.value, 201) : json({ errors: res.errors }, 422);
     }
     case "POST /admin/api/imports/:id/publish": {
-      const res = await publishImport(db, clock, id);
+      const res = await publishImport(db, clock, id, actor);
       return res.ok ? json(res.value) : json({ errors: res.errors }, res.status ?? 422);
     }
 
@@ -130,11 +162,11 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
       const [upd] = await db.batch([
         db.prepare(
           `UPDATE duties SET status = 'CHECKED_IN', checked_in_at = ?1, late = ?2, source = 'override', override_note = ?3,
-                  override_by = 'admin (stub)', updated_at = ?1
+                  override_by = ?5, updated_at = ?1
            WHERE id = ?4 AND status IN ('PENDING', 'MISSED')`,
-        ).bind(now, late, note, id),
-        db.prepare("INSERT INTO audit_log (at, actor, event, detail) SELECT ?, 'admin', 'duty_override', ? WHERE changes() = 1")
-          .bind(now, JSON.stringify({ dutyId: id, note, late })),
+        ).bind(now, late, note, id, admin.username),
+        db.prepare("INSERT INTO audit_log (at, actor, event, detail) SELECT ?, ?, 'duty_override', ? WHERE changes() = 1")
+          .bind(now, actor, JSON.stringify({ dutyId: id, note, late })),
       ]);
       if (upd.meta.changes !== 1) return json({ error: "duty not found, cancelled, or already checked in" }, 409);
       return json({ ok: true });
@@ -149,3 +181,5 @@ export async function handleAdmin(req: Request, env: Env, clock: Clock, path: st
   }
   return json({ error: "not found" }, 404);
 }
+
+const me = (u: AdminUser) => ({ username: u.username, displayName: u.display_name, mustChange: u.must_change === 1 });

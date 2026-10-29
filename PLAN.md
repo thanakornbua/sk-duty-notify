@@ -11,6 +11,7 @@ Scope (2026-10-29): **5-person prototype, 10 duty days** first (OA quota 300/mon
 - [x] 3. LIFF check-in + server-side verification
 - [x] 4. Admin: dashboard, overrides, anomalies, CSV export, location map picker, retention purge
 - [~] 5. Live with real LINE credentials (OA "SK Roll Call"); webhook signature and ID-token verify confirmed. **Real-phone smoke test still to do**
+- [x] 7. Real admin login (username + password, sessions) and Carbon Design System UI (2026-10-29)
 - [ ] 6. Pilot support: per-location distance/accuracy report for tuning radii
 
 ## Layout
@@ -37,12 +38,15 @@ All values live in `src/config.ts`; all are unconfirmed defaults.
 - Import: long format (`date, staff_code, location_code, shift, start, end`); date-only row = explicit no-duty date; dates not in any published file are UNKNOWN. A file is a full snapshot for its dates: unchanged PENDING duties kept (no re-notification), changed ones cancelled and re-created, missing ones cancelled; CHECKED_IN/MISSED duties are never touched (warning only). BE years 2400–2800 are converted.
 - Linking: 8-char code (31-symbol alphabet), 15 min TTL, single use, SHA-256 at rest, a new code revokes the old one. Relinking a member replaces the old LINE account. A LINE account linked to another member is refused without consuming the code.
 - Webhook: greets `follow` with the link page, answers any private message with a help line. A shared location message is never a check-in.
-- Admin auth is a STUB shared bearer token (open question 10; Cloudflare Access in front of `/admin*` and `/dashboard` would need no code). Overrides are recorded as `override_by = 'admin (stub)'`.
+- Admin auth: username + password. PBKDF2-SHA256 at 20,000 iterations (~5 ms CPU, inside the Workers Free plan's 10 ms; each hash stores its count, raise `config.auth.pbkdf2Iterations` to 100k on a paid plan). Passwords ≥ 12 chars, must not contain the username. 5 failures lock the account 15 min; login also behind the per-IP limiter. Sessions: random 256-bit token, SHA-256 stored, 12 h absolute / 2 h idle, `__Host-sdn_session` HttpOnly Secure SameSite=Strict; every non-GET admin request must carry a same-origin `Origin`. New admins get a 16-char temporary password from `scripts/create-admin.mjs` and must change it at first sign-in (all other API calls answer 403 until then); changing a password signs out the user's other sessions. No self-service admin creation or reset: rerun the script. Overrides record the username.
+- `__Host-` cookies need HTTPS: for local UI work run `wrangler dev --local-protocol https` (plain http://localhost drops the cookie in Chromium).
+- Staff and location codes allow letters, digits, `.`, `_`, `-` (max 32), e.g. `singha.su`.
+- UI: Carbon Design System (white / g100 by device preference). Carbon's precompiled CSS has no type-helper classes, so headings use Carbon's type-scale sizes in `public/app.css`.
 - Fake LINE client is used only when `LINE_CLIENT=fake`. Without real credentials the live Worker plans and sweeps but sends nothing, and `/api/*` answers 503.
 - LIFF SDK 2.24.0 is pinned by URL but has no SRI hash: LINE's CDN sends no CORS header, so `integrity` would block it. Leaflet 1.9.4 has SRI.
 
-## Tests (90, `npm test`)
-schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 4.
+## Tests (102, `npm test`)
+schema 6 · time+geo 5 · import 7 · roster parser 4 · linking 6 · scheduler 21 · check-in 22 · webhook 4 · admin/report/anomalies/retention 11 · HTTP client mapping 4 · auth 11.
 Spec 12 acceptance criteria → `test/checkin.test.ts` "AC1"–"AC3", `test/scheduler.test.ts` "never twice, even after a restart" (AC4), `test/admin.test.ts` "AC5".
 
 ## Performance
