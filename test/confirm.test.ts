@@ -44,6 +44,21 @@ describe("check-in receipt (email)", () => {
     expect((await confirms())[0]).toMatchObject({ channel: "email", status: "API_ACCEPTED", dedupe_key: `EC:${await dutyId(1)}` });
   });
 
+  it("the receipt has an HTML part: escaped values, the emblem, a link to the member page, the shift's display name", async () => {
+    await db.prepare("UPDATE locations SET name = ? WHERE code = 'GATE'").bind('Gate <b>"1"</b> & co').run();
+    applySchedule({ shifts: [{ code: "AM", name: "Morning gate", start: "06:30", end: "12:00" }, { code: "PM", name: "", start: "14:20", end: "18:00" }] });
+    await checkIn(1);
+    const { html, text, subject } = mail.sent[0];
+    expect(subject).toContain("Morning gate");
+    expect(html).toMatch(/^<!doctype html>/);
+    expect(html).toContain("Gate &lt;b&gt;&quot;1&quot;&lt;/b&gt; &amp; co");
+    expect(html).not.toContain("<b>");
+    expect(html).toContain(`src="${URL_}/brand/emblem-96.png"`);
+    expect(html).toContain(`href="${URL_}/me"`);
+    expect(html).toContain("ตรงเวลา");
+    expect(text).toContain('Gate <b>"1"</b> & co'); // the text part is plain
+  });
+
   it("late check-in says late; English when the setting says so", async () => {
     applySchedule({ messageLanguage: "en" });
     clock.set(at(D, "07:05"));

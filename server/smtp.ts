@@ -27,7 +27,7 @@ export function smtpFromEnv(env: NodeJS.ProcessEnv): EmailClient | undefined {
     async send(m: EmailMessage): Promise<EmailResult> {
       try {
         const info = await transport.sendMail({
-          from, to: m.to, subject: m.subject, text: m.text, messageId: m.messageId,
+          from, to: m.to, subject: m.subject, text: m.text, html: m.html, messageId: m.messageId,
           headers: { "Auto-Submitted": "auto-generated" },
         });
         return { kind: "accepted", messageId: info.messageId ?? m.messageId };

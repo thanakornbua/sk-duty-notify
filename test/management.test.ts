@@ -57,7 +57,10 @@ describe("scheduling settings", () => {
   it("read, save, and apply; validation names the field", async () => {
     expect((await j(await admin(line, clock, "GET", "/admin/api/settings"))).body).toMatchObject({ schedule: DEFAULTS, updatedBy: null });
     for (const [patch, field] of [
-      [{ shifts: { AM: { start: "12:00", end: "11:00" }, PM: DEFAULTS.shifts.PM } }, "shifts.AM"],
+      [{ shifts: [{ code: "AM", name: "", start: "12:00", end: "11:00" }, { code: "PM", name: "", start: "14:20", end: "18:00" }] }, "shifts.0.end"],
+      [{ shifts: [{ code: "AM", name: "", start: "07:00", end: "11:00" }, { code: "am", name: "", start: "13:00", end: "14:00" }] }, "shifts.1.code"],
+      [{ shifts: [{ code: "A M", name: "", start: "07:00", end: "11:00" }] }, "shifts.0.code"],
+      [{ shifts: [] }, "shifts"],
       [{ reminderTime: "25:00" }, "reminderTime"],
       [{ missedAfterMinutes: 1 }, "missedAfterMinutes"],
       [{ messageLanguage: "fr" }, "messageLanguage"],
@@ -65,7 +68,7 @@ describe("scheduling settings", () => {
       const r = await j(await admin(line, clock, "POST", "/admin/api/settings", { ...valid(), ...patch }));
       expect([r.status, r.body.field]).toEqual([400, field]);
     }
-    const s = { ...valid(), lateAfterMinutes: 10, shifts: { AM: { start: "07:00", end: "11:30" }, PM: DEFAULTS.shifts.PM } };
+    const s = { ...valid(), lateAfterMinutes: 10, shifts: [{ code: "AM", name: "", start: "07:00", end: "11:30" }, { code: "PM", name: "", start: "14:20", end: "18:00" }] };
     expect((await admin(line, clock, "POST", "/admin/api/settings", s)).status).toBe(200);
     expect(config.lateAfterMinutes).toBe(10);
     // Survives a fresh isolate: the next request reloads from D1.
@@ -77,7 +80,7 @@ describe("scheduling settings", () => {
 
   it("new shift times apply to duties published afterwards; the late threshold applies to check-ins right away", async () => {
     await seedMembers(2); await seedLocation();
-    await admin(line, clock, "POST", "/admin/api/settings", { ...valid(), lateAfterMinutes: 5, shifts: { AM: { start: "07:00", end: "11:30" }, PM: DEFAULTS.shifts.PM } });
+    await admin(line, clock, "POST", "/admin/api/settings", { ...valid(), lateAfterMinutes: 5, shifts: [{ code: "AM", name: "", start: "07:00", end: "11:30" }, { code: "PM", name: "", start: "14:20", end: "18:00" }] });
     await publishRows(amPm([D], 1));
     const am = await db.prepare("SELECT start_at, end_at FROM duties WHERE shift = 'AM'").first<{ start_at: number; end_at: number }>();
     expect(am).toEqual({ start_at: at(D, "07:00"), end_at: at(D, "11:30") });
@@ -85,6 +88,35 @@ describe("scheduling settings", () => {
     const s = (await (await call(line, clock, "POST", "/api/checkin/start", { idToken: token(1) })).json()) as any;
     const r = (await (await call(line, clock, "POST", "/api/checkin/submit", { idToken: token(1), dutyId: s.current.dutyId, nonce: s.current.nonce, lat: SITE.lat, lng: SITE.lng, accuracy: 10 })).json()) as any;
     expect(r.duty.late).toBe(true);
+  });
+
+  it("management defines its own shifts: new codes, names and times; removed codes need explicit times in files", async () => {
+    await seedMembers(2); await seedLocation();
+    const shifts = [
+      { code: "MORN", name: "Morning gate", start: "06:45", end: "08:00" },
+      { code: "lunch", name: "", start: "12:00", end: "13:00" },
+    ];
+    const r = await j(await admin(line, clock, "POST", "/admin/api/settings", { ...valid(), shifts }));
+    expect(r.status).toBe(200);
+    expect(r.body.schedule.shifts.map((x: any) => x.code)).toEqual(["MORN", "LUNCH"]);
+    expect(config.shifts.MORN).toEqual({ start: "06:45", end: "08:00", name: "Morning gate" });
+    expect(config.shifts.AM).toBeUndefined();
+    // The duty sheet gets the list in order.
+    const sheet = await j(await admin(line, clock, "GET", `/admin/api/duties?from=${D}&to=${D}`));
+    expect(sheet.body.shifts.map((x: any) => x.code)).toEqual(["MORN", "LUNCH"]);
+    await publishRows([{ date: D, staffCode: "S001", locationCode: "GATE", shift: "MORN" }, { date: D, staffCode: "S002", locationCode: "GATE", shift: "LUNCH" }]);
+    const m = await db.prepare("SELECT start_at, end_at FROM duties WHERE shift = 'MORN'").first<{ start_at: number; end_at: number }>();
+    expect(m).toEqual({ start_at: at(D, "06:45"), end_at: at(D, "08:00") });
+    // AM is no longer configured: a file row needs its own times.
+    const staged = await j(await admin(line, clock, "POST", "/admin/api/imports", { rows: [{ line: 1, date: D, staffCode: "S001", locationCode: "GATE", shift: "AM" }] }));
+    expect(staged.body.errors[0].code).toBe("shift_needs_times");
+  });
+
+  it("settings saved before 1.1 (AM/PM object) still load", async () => {
+    await db.prepare("INSERT INTO settings (key, value, updated_at, updated_by) VALUES ('schedule', ?, 0, 'x')")
+      .bind(JSON.stringify({ ...valid(), shifts: { AM: { start: "07:10", end: "11:00" }, PM: { start: "13:00", end: "17:00" } } })).run();
+    await loadSchedule(db);
+    expect(config.shiftList.map((x) => [x.code, x.start])).toEqual([["AM", "07:10"], ["PM", "13:00"]]);
   });
 
   it("saving re-plans messages that have not been attempted yet", async () => {

@@ -319,11 +319,11 @@ async function processRow(deps: SchedulerDeps, owner: string, row: OutboxRow): P
   };
 
   if (isEmail) {
-    const { subject, text } = JSON.parse(pinned.payload) as { subject: string; text: string };
+    const { subject, text, html } = JSON.parse(pinned.payload) as { subject: string; text: string; html?: string };
     const host = deps.publicUrl ? new URL(deps.publicUrl).hostname : "sk-duty-notify";
     let r: EmailResult;
     try {
-      r = await deps.email!.send({ to: pinned.target_user_id, subject, text, messageId: `<${pinned.retry_key}@${host}>` });
+      r = await deps.email!.send({ to: pinned.target_user_id, subject, text, html, messageId: `<${pinned.retry_key}@${host}>` });
     } catch (e) {
       r = { kind: "temporary", message: String(e) };
     }

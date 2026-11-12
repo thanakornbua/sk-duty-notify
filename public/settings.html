@@ -33,12 +33,34 @@ if (data.updatedAt) $("last").textContent = t("set.lastChange", { time: dateTime
 const time = (id, label, value, helper) => textInput({ id, label, value, helper: helper ?? t("set.timeHelp"), inputmode: "numeric", maxlength: 5, placeholder: "HH:MM", autocomplete: "off" });
 const num = (id, label, value, helper, min, max) => textInput({ id, label, type: "number", value, helper, min, max });
 const f = {};
+let shiftRows = []; // the shift editor's rows (built in build())
+const liveShifts = () => shiftRows.filter((r) => !r.removed);
 function build(s) {
   for (const k of Object.keys(f)) delete f[k];
-  for (const sh of ["AM", "PM"]) {
-    f[`shifts.${sh}.start`] = time(`${sh}-start`, t("set.shiftStart", { shift: sh }), s.shifts[sh].start);
-    f[`shifts.${sh}.end`] = time(`${sh}-end`, t("set.shiftEnd", { shift: sh }), s.shifts[sh].end);
-  }
+  // Shift list editor: code (used in roster files), optional display name, start, end. Order = duty sheet columns.
+  const list = Array.isArray(s.shifts) ? s.shifts : Object.entries(s.shifts).map(([code, x]) => ({ code, name: "", ...x }));
+  shiftRows = [];
+  const shiftBox = el("div", { class: "stack" });
+  const addRow = (sh = { code: "", name: "", start: "", end: "" }) => {
+    const i = shiftRows.length;
+    const row = {
+      code: textInput({ id: `sh-code-${i}`, label: t("set.shiftCode"), value: sh.code, helper: t("set.shiftCodeHelp"), maxlength: 12, autocapitalize: "characters", spellcheck: "false" }),
+      name: textInput({ id: `sh-name-${i}`, label: t("set.shiftName"), value: sh.name ?? "", helper: t("set.shiftNameHelp"), maxlength: 40 }),
+      start: time(`sh-start-${i}`, t("set.shiftStartT"), sh.start),
+      end: time(`sh-end-${i}`, t("set.shiftEndT"), sh.end),
+    };
+    row.box = el("div", { class: "row row--fields shift-row" }, row.code, row.name, row.start, row.end,
+      button(t("set.shiftRemove"), { kind: "ghost", size: "md", onclick: () => {
+        if (shiftRows.filter((r) => !r.removed).length <= 1) return;
+        row.removed = true; row.box.remove(); addBtn.disabled = false;
+      } }));
+    shiftRows.push(row);
+    shiftBox.append(row.box);
+    addBtn.disabled = shiftRows.filter((r) => !r.removed).length >= 8;
+  };
+  const addBtn = button(t("set.shiftAdd"), { kind: "tertiary", size: "md", onclick: () => addRow() });
+  list.forEach((sh) => addRow(sh));
+  f.shiftsBox = el("div", { class: "stack" }, el("p", { class: "body secondary" }, t("set.shiftsIntro")), shiftBox, el("div", {}, addBtn));
   f.reminderTime = time("reminder", t("set.reminderTime"), s.reminderTime, t("set.reminderHelp"));
   f.missedAfterMinutes = num("missed", t("set.missedAfter"), s.missedAfterMinutes, t("set.missedHelp"), 5, 240);
   f.messageLanguage = select({ id: "lang", label: t("set.language"), value: s.messageLanguage, options: [["th", t("set.lang.th")], ["en", t("set.lang.en")]] });
@@ -67,7 +89,7 @@ function build(s) {
 
   const section = (title, ...rows) => el("div", { class: "cds--tile stack", style: "margin-top:1rem" }, el("h2", { class: "h3" }, title), ...rows);
   $("form").replaceChildren(
-    section(t("set.shifts"), el("div", { class: "row row--fields" }, f["shifts.AM.start"], f["shifts.AM.end"]), el("div", { class: "row row--fields" }, f["shifts.PM.start"], f["shifts.PM.end"])),
+    section(t("set.shifts"), f.shiftsBox),
     section(t("set.window"), el("div", { class: "row row--fields" }, f.earlyGraceMinutes, f.lateAfterMinutes)),
     section(t("set.messages"), el("div", { class: "row row--fields" }, f.reminderTime, f.missedAfterMinutes), el("div", { class: "row row--fields" }, f.messageLanguage), f.confirmOnCheckin),
     section(t("set.quiet"), el("div", { class: "row row--fields" }, f["quietHours.start"], f["quietHours.end"])),
@@ -82,8 +104,9 @@ const v = (k) => f[k].input.value;
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   for (const w of Object.values(f)) w.invalid?.(null);
+  for (const r of liveShifts()) for (const k of ["code", "name", "start", "end"]) r[k].invalid(null);
   const body = {
-    shifts: { AM: { start: v("shifts.AM.start"), end: v("shifts.AM.end") }, PM: { start: v("shifts.PM.start"), end: v("shifts.PM.end") } },
+    shifts: liveShifts().map((r) => ({ code: r.code.input.value.trim().toUpperCase(), name: r.name.input.value.trim(), start: r.start.input.value.trim(), end: r.end.input.value.trim() })),
     reminderTime: v("reminderTime"), missedAfterMinutes: Number(v("missedAfterMinutes")), messageLanguage: v("messageLanguage"),
     confirmOnCheckin: f.confirmOnCheckin.input.checked, quietHours: { start: v("quietHours.start"), end: v("quietHours.end") },
     earlyGraceMinutes: Number(v("earlyGraceMinutes")), lateAfterMinutes: Number(v("lateAfterMinutes")),
@@ -94,8 +117,9 @@ $("form").addEventListener("submit", async (e) => {
     $("msg").replaceChildren(notification("success", t("set.saved"), r.data.replanned ? t("set.savedBody", { n: r.data.replanned }) : ""));
   } else {
     const msg = t(`set.field.${r.data.error}`);
-    // A field like "shifts.AM" or "quietHours" marks its end input; others mark themselves.
-    const target = f[r.data.field] ?? f[`${r.data.field}.end`];
+    // "shifts.<i>.<part>" marks that shift input; "quietHours" marks its end input; others mark themselves.
+    const m = /^shifts\.(\d+)\.(\w+)$/.exec(r.data.field ?? "");
+    const target = m ? liveShifts()[Number(m[1])]?.[m[2]] : f[r.data.field] ?? f[`${r.data.field}.end`];
     target?.invalid?.(msg);
     $("msg").replaceChildren(notification("error", t("set.notSaved"), msg));
   }

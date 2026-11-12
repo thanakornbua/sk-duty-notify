@@ -44,7 +44,7 @@ await shell("/sheet");
 document.title = t("sheet.title");
 const $ = (id) => document.getElementById(id);
 const addDays = (d, n) => { const [y, m, dd] = d.split("-").map(Number); return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10); };
-const SHIFTS = ["AM", "PM"];
+let SHIFTS = []; // configured shift codes, in order (Settings page)
 
 const today = bangkokToday();
 const from = textInput({ id: "from", label: t("sheet.from"), type: "date", value: today });
@@ -63,6 +63,7 @@ async function load() {
   const r = await api("GET", `/admin/api/duties?from=${from.input.value}&to=${to.input.value}`);
   if (!r.ok) { $("msg").replaceChildren(notification("error", errText(r.data))); $("grid").replaceChildren(); return; }
   data = r.data;
+  SHIFTS = data.shifts.map((s) => s.code);
   ticks = new Map();
   for (const d of data.duties) if (SHIFTS.includes(d.shift)) ticks.set(keyOf(d.staffCode, d.date, d.shift), d);
   dirty = false;
@@ -82,6 +83,12 @@ function dates() {
   return out;
 }
 
+/** "Morning gate · 06:45–08:00" for a configured shift. */
+function shiftTitle(code) {
+  const d = data.shifts.find((s) => s.code === code);
+  return d ? `${d.name ? `${d.name} · ` : ""}${d.start}–${d.end}` : code;
+}
+
 function cell(m, date) {
   const box = el("div", { class: "cell" });
   for (const shift of SHIFTS) {
@@ -96,7 +103,7 @@ function cell(m, date) {
         dirty = true; staged = null; $("review").replaceChildren(); actions();
       } });
     box.append(el("div", { class: "cds--checkbox-wrapper" }, input,
-      el("label", { class: "cds--checkbox-label", for: id }, el("span", { class: "cds--checkbox-label-text" },
+      el("label", { class: "cds--checkbox-label", for: id, title: shiftTitle(shift) }, el("span", { class: "cds--checkbox-label-text" },
         existing && existing.locationCode !== (locPick?.input.value) ? `${shift} · ${existing.locationCode}` : shift))));
   }
   // Other shifts (from file imports) are kept unchanged.

@@ -8,6 +8,8 @@ export interface EmailMessage {
   to: string;
   subject: string;
   text: string;
+  /** HTML alternative (sent as multipart/alternative with the text). */
+  html?: string;
   /** Pinned per outbox row (from its retry key) and reused on every retry, so receivers can drop duplicates. */
   messageId: string;
 }

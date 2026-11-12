@@ -7,8 +7,8 @@ export type MessageKind = "REMINDER" | "PROMPT" | "MISSED" | "CONFIRM";
 export type Lang = "th" | "en";
 /** Email notifications: off, only to members not linked to LINE (when planned), or to everyone with a roster email. */
 export type EmailMode = "off" | "fallback" | "all";
-/** Fields of the check-in receipt email. */
-export interface Receipt { member: string; duty: string; location: string; time: string; late: boolean; override: boolean; no: string }
+/** A configured shift. `name` is optional (empty = show the code). */
+export interface ShiftDef { code: string; name: string; start: string; end: string }
 
 export const config = {
   /** Shown on the credits page (/healthz). Keep in step with package.json. */
@@ -17,13 +17,20 @@ export const config = {
   /** Asia/Bangkok is fixed UTC+7 (no DST). Duty dates are Bangkok calendar dates. */
   tzOffsetMinutes: 7 * 60,
 
-  /** Roster shift codes -> Bangkok wall-clock times. A row may override with explicit start/end. [ASSUMPTION] */
-  shifts: {
-    AM: { start: "06:30", end: "12:00" },
-    PM: { start: "14:20", end: "18:00" },
-  } as Record<string, { start: string; end: string }>,
-  /** Max length of a custom shift code (rows with explicit start/end). */
+  /**
+   * Shifts, in display order (duty sheet columns). Management edits this list on the Settings page: code (used in
+   * roster files), optional display name (used in messages), Bangkok wall-clock start/end. A roster row may also use
+   * any other code with explicit start/end. [ASSUMPTION: AM/PM defaults]
+   */
+  shiftList: [
+    { code: "AM", name: "", start: "06:30", end: "12:00" },
+    { code: "PM", name: "", start: "14:20", end: "18:00" },
+  ] as ShiftDef[],
+  /** Lookup by code, derived from shiftList (kept in step by src/settings.ts applySchedule). */
+  shifts: { AM: { start: "06:30", end: "12:00" }, PM: { start: "14:20", end: "18:00" } } as Record<string, { start: string; end: string; name?: string }>,
+  /** Max length of a shift code; at most maxShifts configured shifts. */
   shiftCodeMaxLength: 12,
+  maxShifts: 8,
 
   /** Day-before reminder, Bangkok time on the calendar day before the duty date. [ASSUMPTION] */
   reminderTime: "16:00",
@@ -118,22 +125,29 @@ export const config = {
       help: (url: string) => `This chat only sends duty notices. Your duties and check-in: ${url}`,
       email: {
         reminderSubject: (dateLabel: string) => `Duty reminder: ${dateLabel}`,
+        reminderTitle: (dateLabel: string) => `Your duties on ${dateLabel}`,
+        reminderIntro: "You are on the duty roster:",
         promptSubject: (shift: string, start: string) => `${shift} duty starts at ${start}`,
+        promptTitle: (shift: string, start: string) => `${shift} duty starts at ${start}`,
         missedSubject: (shift: string) => `Not checked in yet: ${shift} duty`,
+        missedTitle: (shift: string) => `You have not checked in for ${shift} duty`,
         receiptSubject: (shift: string, dateLabel: string) => `Check-in receipt: ${shift} duty, ${dateLabel}`,
-        receipt: (r: Receipt) => [
-          "Check-in receipt", "",
-          ...(r.member ? [`Member: ${r.member}`] : []),
-          `Duty: ${r.duty}`, `Location: ${r.location}`,
-          `Checked in: ${r.time} (${r.late ? "late" : "on time"})`,
-          `Method: ${r.override ? "recorded by a coordinator" : "location check (GPS)"}`,
-          `Receipt no.: ${r.no}`, "",
-          "Keep this email as your record. If anything here is wrong, tell your duty coordinator and quote the receipt number.",
-        ].join("\n"),
-        checkInAt: (url: string) => `Check in on your duty page: ${url}`,
-        footer: (url: string) => `This is an automatic message from SK Duty. Your duty records: ${url}`,
+        receiptTitle: "Check-in receipt",
+        label: {
+          member: "Member", duty: "Duty", date: "Date", time: "Time", location: "Location", checkedIn: "Checked in",
+          method: "Method", receiptNo: "Receipt no.", window: "Check-in window",
+        },
+        timeSuffix: "",
+        onTime: "on time", late: "late", gps: "location check (GPS)", override: "recorded by a coordinator",
+        windowNote: (early: number) => `Check-in opens ${early} min before each start, at the duty location only.`,
+        keepNote: "Keep this email as your record. If anything here is wrong, tell your duty coordinator and quote the receipt number.",
+        ctaCheckIn: "Check in", ctaDuties: "View my duties", ctaRecord: "View my record",
+        linkHint: "If the button does not work, open this link:",
+        autoNote: "Automatic message from SK Duty. Replies are not read.",
+        footer: (url: string) => `Automatic message from SK Duty. Your duty records: ${url}`,
         testSubject: "SK Duty: test email",
-        testBody: "Email from SK Duty works. Members will receive duty notices from this address.",
+        testTitle: "Email works",
+        testBody: "Email from SK Duty works. Members will receive duty notices and check-in receipts from this address.",
       },
     },
     th: {
@@ -153,22 +167,29 @@ export const config = {
       help: (url: string) => `แชตนี้ใช้ส่งการแจ้งเตือนเวรเท่านั้น ดูเวรและเช็กอินได้ที่ ${url}`,
       email: {
         reminderSubject: (dateLabel: string) => `แจ้งเตือนเวร${dateLabel}`,
+        reminderTitle: (dateLabel: string) => `เวรของคุณ${dateLabel}`,
+        reminderIntro: "คุณมีชื่ออยู่ในตารางเวร:",
         promptSubject: (shift: string, start: string) => `เวร ${shift} เริ่ม ${start} น.`,
+        promptTitle: (shift: string, start: string) => `เวร ${shift} เริ่ม ${start} น.`,
         missedSubject: (shift: string) => `ยังไม่ได้เช็กอินเวร ${shift}`,
+        missedTitle: (shift: string) => `คุณยังไม่ได้เช็กอินเวร ${shift}`,
         receiptSubject: (shift: string, dateLabel: string) => `ใบยืนยันเช็กอิน: เวร ${shift} ${dateLabel}`,
-        receipt: (r: Receipt) => [
-          "ใบยืนยันการเช็กอิน", "",
-          ...(r.member ? [`สมาชิก: ${r.member}`] : []),
-          `เวร: ${r.duty} น.`, `จุดเวร: ${r.location}`,
-          `เช็กอินเวลา: ${r.time} น. (${r.late ? "สาย" : "ตรงเวลา"})`,
-          `วิธี: ${r.override ? "บันทึกโดยผู้ดูแล" : "ตรวจตำแหน่ง (GPS)"}`,
-          `เลขที่: ${r.no}`, "",
-          "เก็บอีเมลนี้ไว้เป็นหลักฐาน หากข้อมูลไม่ถูกต้อง แจ้งผู้ดูแลเวรพร้อมเลขที่ใบยืนยัน",
-        ].join("\n"),
-        checkInAt: (url: string) => `เช็กอินได้ที่หน้าเวรของคุณ: ${url}`,
+        receiptTitle: "ใบยืนยันการเช็กอิน",
+        label: {
+          member: "สมาชิก", duty: "เวร", date: "วันที่", time: "เวลา", location: "จุดเวร", checkedIn: "เช็กอินเวลา",
+          method: "วิธี", receiptNo: "เลขที่", window: "ช่วงเวลาเช็กอิน",
+        },
+        timeSuffix: " น.",
+        onTime: "ตรงเวลา", late: "สาย", gps: "ตรวจตำแหน่ง (GPS)", override: "บันทึกโดยผู้ดูแล",
+        windowNote: (early: number) => `เช็กอินได้ก่อนเวลาเริ่ม ${early} นาที และต้องอยู่ในพื้นที่เวรเท่านั้น`,
+        keepNote: "เก็บอีเมลนี้ไว้เป็นหลักฐาน หากข้อมูลไม่ถูกต้อง แจ้งผู้ดูแลเวรพร้อมเลขที่ใบยืนยัน",
+        ctaCheckIn: "เช็กอิน", ctaDuties: "ดูเวรของฉัน", ctaRecord: "ดูประวัติของฉัน",
+        linkHint: "หากกดปุ่มไม่ได้ ให้เปิดลิงก์นี้:",
+        autoNote: "ข้อความอัตโนมัติจาก SK Duty ระบบไม่ได้อ่านอีเมลตอบกลับ",
         footer: (url: string) => `ข้อความอัตโนมัติจาก SK Duty ดูประวัติเวรของคุณได้ที่ ${url}`,
         testSubject: "SK Duty: ทดสอบอีเมล",
-        testBody: "ระบบส่งอีเมลของ SK Duty ใช้งานได้ สมาชิกจะได้รับการแจ้งเตือนเวรจากที่อยู่นี้",
+        testTitle: "ระบบอีเมลใช้งานได้",
+        testBody: "ระบบส่งอีเมลของ SK Duty ใช้งานได้ สมาชิกจะได้รับการแจ้งเตือนเวรและใบยืนยันเช็กอินจากที่อยู่นี้",
       },
     },
   },

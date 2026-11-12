@@ -78,3 +78,8 @@ td .helper { display: block; }
 .link-list { list-style: none; padding: 0; margin: 0; }
 .link-list li { padding: .75rem 0; border-bottom: 1px solid var(--cds-border-subtle-01); }
 .link-list li:last-child { border-bottom: 0; }
+/* Settings: one shift per line (code, name, start, end, remove). */
+.shift-row { flex-wrap: nowrap; }
+.shift-row > .cds--form-item { flex: 1 1 7rem; min-width: 0; }
+.shift-row > .cds--form-item:nth-child(2) { flex-grow: 2; }
+@media (max-width: 40rem) { .shift-row { flex-wrap: wrap; } .shift-row > .cds--form-item { flex-basis: 40%; } }

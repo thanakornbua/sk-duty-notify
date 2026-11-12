@@ -13,6 +13,7 @@ import type { LineClient } from "./line";
 import { allowedDomains, googleConfigured } from "./google";
 import { attemptsFor, buildToday, exportCsv } from "./report";
 import { emailClientFor } from "./email";
+import { buildTestEmail } from "./messages";
 import { saveSchedule, scheduleInfo } from "./settings";
 import { addDays, bangkokDateOf, bangkokTimeOf } from "./time";
 import { isStr, json, readJson } from "./util";
@@ -189,7 +190,7 @@ export async function handleAdmin(
         db.prepare("SELECT duty_date FROM roster_dates WHERE duty_date BETWEEN ? AND ?").bind(from, to).all<{ duty_date: string }>(),
       ]);
       return json({
-        from, to, shifts: { AM: config.shifts.AM, PM: config.shifts.PM },
+        from, to, shifts: config.shiftList,
         members: members.results, locations: locations.results, knownDates: known.results.map((r) => r.duty_date),
         duties: duties.results.map((d) => ({
           id: d.id, staffCode: d.staff_code, date: d.duty_date, shift: d.shift, locationCode: d.location_code,
@@ -246,10 +247,9 @@ export async function handleAdmin(
       if (!email || !env.PUBLIC_URL) return json({ error: "email_not_configured" }, 503);
       const row = await db.prepare("SELECT email FROM admin_users WHERE id = ?").bind(admin.id).first<{ email: string | null }>();
       if (!row?.email) return json({ error: "admin_has_no_email" }, 400);
-      const E = config.messages[config.messageLanguage].email;
       let r;
       try {
-        r = await email.send({ to: row.email, subject: E.testSubject, text: E.testBody, messageId: `<test-${crypto.randomUUID()}@${new URL(env.PUBLIC_URL).hostname}>` });
+        r = await email.send({ to: row.email, ...buildTestEmail(env.PUBLIC_URL), messageId: `<test-${crypto.randomUUID()}@${new URL(env.PUBLIC_URL).hostname}>` });
       } catch (e) {
         r = { kind: "temporary" as const, message: String(e) };
       }
