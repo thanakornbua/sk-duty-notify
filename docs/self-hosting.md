@@ -35,8 +35,8 @@ On a fresh Ubuntu Server 24.04 / Debian 12 computer:
 ```bash
 sudo apt-get install -y git
 git clone <your repo url> sk-duty-notify && cd sk-duty-notify
-sudo ./install.sh --no-sleep          # Docker Compose
-# or: sudo ./install.sh --k3s --no-sleep
+sudo ./install.sh --domain duty.example.ac.th --no-sleep          # Docker Compose
+# or: sudo ./install.sh --k3s --domain duty.example.ac.th --no-sleep
 ```
 
 It installs Docker (from Docker's own apt repository; k3s v1.33.5+k3s1 with `--k3s`), asks for every setting
@@ -46,6 +46,29 @@ is healthy and prints the URLs to paste into the Cloudflare, Google and LINE con
 `git pull && sudo ./install.sh`.
 
 You still need the console steps in sections 2–4 (they need your accounts). The sections below are the manual way.
+
+## Choosing the domain
+
+Everything that leaves the computer is built from one setting, the domain (`PUBLIC_URL=https://<domain>`): the tunnel
+hostname, the Google redirect URI, the LINE webhook and LIFF endpoint, and the links in emails. Give it to the installer
+with `sudo ./install.sh --domain duty.example.ac.th` (or answer the prompt).
+
+The hostname must be in a **zone that is active on your Cloudflare account** (a Cloudflare Tunnel can only publish
+hostnames of zones Cloudflare manages):
+
+- **A domain already on your Cloudflare account** (e.g. a subdomain of a domain you own there): works directly.
+- **The school's own domain** (e.g. `duty.<school domain>`) when the school's DNS is elsewhere. Two options:
+  1. The school moves its DNS zone to Cloudflare (free plan); then add the tunnel hostname as above.
+  2. Keep the school's DNS and use **Cloudflare for SaaS (custom hostnames)** on a zone you do have (free for up to
+     100 hostnames): publish the tunnel on your own hostname, set it as the zone's fallback origin, add the school
+     hostname as a custom hostname, and ask the school's IT to create the CNAME (to your hostname) and the TXT
+     validation records Cloudflare shows. A plain CNAME to your hostname without this setup does **not** work
+     (Cloudflare answers error 1014).
+
+**Moving to another domain later:** run `sudo ./install.sh --domain <new>`, then update the tunnel's public hostname,
+add the new Google redirect URI (keep the old one until the move is done), and change the LINE webhook URL and LIFF
+endpoint URL. Printed flyers stay valid: their QR code points to `liff.line.me/<LIFF ID>`, not to your domain.
+Signed-in sessions do not carry over (cookies belong to the old domain), so admins and members sign in once more.
 
 ## 1. Build the image
 

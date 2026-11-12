@@ -73,8 +73,8 @@ td .helper { display: block; }
 .kpis--small .kpi { font-size: 1.5rem; line-height: 2rem; }
 .who-line { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
 /* Credits */
-.credit-dev { padding: 1.5rem; }
-.credit-dev img { width: 100%; max-width: 30rem; }
+.credit-dev { padding: 1.5rem; text-decoration: none; }
+.credit-dev img { display: block; width: 100%; max-width: 13rem; height: auto; }
 .link-list { list-style: none; padding: 0; margin: 0; }
 .link-list li { padding: .75rem 0; border-bottom: 1px solid var(--cds-border-subtle-01); }
 .link-list li:last-child { border-bottom: 0; }

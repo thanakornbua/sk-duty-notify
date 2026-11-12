@@ -169,7 +169,7 @@ try {
   check("portal shows own duties with the check-in", recs.status === 200 && recs.data.totals.checkedIn === 1 && recs.data.duties.length === 2, JSON.stringify(recs.data).slice(0, 300));
   cookie = saved;
 
-  for (const p of ["/me", "/credits", "/brand/logo.svg", "/brand/tan-wordmark.svg", "/sheet"]) {
+  for (const p of ["/me", "/credits", "/brand/logo.svg", "/brand/thanakorn-wordmark.svg", "/sheet"]) {
     const r = await fetch(BASE + p);
     check(`GET ${p}`, r.status === 200, String(r.status));
   }

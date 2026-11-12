@@ -24,11 +24,12 @@ Cloudflare Tunnel, with Kubernetes manifests included. Both run the same code in
 On the Ubuntu/Debian computer, from this folder:
 
 ```bash
-sudo ./install.sh            # installs Docker, asks for the settings, builds the image, starts the app + tunnel
-sudo ./install.sh --k3s      # the same on single-node Kubernetes (k3s)
+sudo ./install.sh --domain duty.example.ac.th   # installs Docker, asks for the settings, builds, starts app + tunnel
+sudo ./install.sh --k3s --domain duty.example.ac.th   # the same on single-node Kubernetes (k3s)
 ```
 
-Add `--no-sleep` to keep a laptop/desktop awake. By hand instead: `cp .env.example .env`, fill it in,
+Add `--no-sleep` to keep a laptop/desktop awake. The domain must be on your Cloudflare account; see
+[Choosing the domain](docs/self-hosting.md#choosing-the-domain). By hand instead: `cp .env.example .env`, fill it in,
 `docker compose up -d --build`.
 
 Full guide, including the LINE, Google and Cloudflare console steps, k3s, backups and upgrades:
@@ -81,4 +82,5 @@ Developed by **Thanakorn Buathongtanakarn** ([thanakorn.site](https://thanakorn.
 SheetJS Community Edition (Apache-2.0), qrcode-generator (MIT); Nodemailer (MIT) is bundled into the server.
 The school emblem (`public/brand/emblem-*.png`) is the property of its school and is **not** covered by the MIT
 license; replace it for other deployments. The app icon (`public/brand/logo*`, `public/favicon.ico`) and the
-developer wordmark (`public/brand/tan-wordmark.svg`) are set in IBM Plex Mono and Space Grotesk (SIL OFL 1.1).
+developer wordmark (`public/brand/thanakorn-wordmark.svg`, thanakorn. design system) are set in IBM Plex Mono and
+Geist (SIL OFL 1.1).

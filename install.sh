@@ -4,6 +4,7 @@
 #   sudo ./install.sh                 Docker Compose (simplest; recommended for one machine)
 #   sudo ./install.sh --k3s           single-node Kubernetes (k3s) with the manifests in k8s/
 #   options:
+#     --domain NAME   the public domain, e.g. duty.example.ac.th (sets PUBLIC_URL=https://NAME; asked if not given)
 #     --reconfigure   ask the settings again even if .env exists
 #     --no-sleep      keep the computer awake (no suspend; closing a laptop lid does nothing)
 #     --yes           do not ask before installing Docker / k3s
@@ -14,15 +15,19 @@
 set -euo pipefail
 
 K3S_VERSION="v1.33.5+k3s1"
-MODE=compose RECONFIGURE=0 NO_SLEEP=0 YES=0
-for a in "$@"; do
+MODE=compose RECONFIGURE=0 NO_SLEEP=0 YES=0 DOMAIN=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  a="${args[$i]}"
   case "$a" in
+    --domain) i=$((i + 1)); DOMAIN="${args[$i]:-}" ;;
+    --domain=*) DOMAIN="${a#--domain=}" ;;
     --k3s) MODE=k3s ;;
     --compose) MODE=compose ;;
     --reconfigure) RECONFIGURE=1 ;;
     --no-sleep) NO_SLEEP=1 ;;
     --yes|-y) YES=1 ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "Unknown option: $a (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -90,8 +95,12 @@ if [ ! -f .env ] || [ "$RECONFIGURE" = 1 ]; then
   [ -f .env ] || cp .env.example .env
   chmod 600 .env; chown "$OWNER" .env
   say "Settings (Enter keeps the value in brackets; secrets are not shown)"
-  echo "Public address members will use, e.g. https://duty.example.ac.th"
-  ask PUBLIC_URL "PUBLIC_URL"
+  if [ -z "$DOMAIN" ]; then
+    cur=$(get_kv PUBLIC_URL); cur="${cur#https://}"
+    echo "Domain members will open (a hostname on a zone in your Cloudflare account), e.g. duty.example.ac.th"
+    read -r -p "Domain ${cur:+[$cur]}: " DOMAIN
+    DOMAIN="${DOMAIN:-$cur}"
+  fi
   echo; echo "Google sign-in (Google Cloud console > Credentials > OAuth client, type Web application)"
   ask GOOGLE_ALLOWED_DOMAINS "School Google domains, comma-separated (e.g. example.ac.th,student.example.ac.th)"
   ask INITIAL_ADMIN_EMAILS "Your Google email (first admin; comma-separated for more)"
@@ -114,9 +123,21 @@ if [ ! -f .env ] || [ "$RECONFIGURE" = 1 ]; then
   ask TUNNEL_TOKEN "Tunnel token" secret
 fi
 
+# The domain decides PUBLIC_URL (Google redirect URI, LINE webhook/LIFF endpoint, links in emails, the tunnel hostname).
+if [ -n "$DOMAIN" ]; then
+  DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN%%/*}"; DOMAIN="${DOMAIN,,}"
+  [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "Not a valid domain: $DOMAIN"
+  [ -f .env ] || { cp .env.example .env; chmod 600 .env; chown "$OWNER" .env; }
+  old=$(get_kv PUBLIC_URL)
+  set_kv PUBLIC_URL "https://$DOMAIN"
+  if [ -n "$old" ] && [ "$old" != "https://$DOMAIN" ] && [ "$old" != "https://duty.example.ac.th" ]; then
+    warn "Domain changed from ${old#https://} to $DOMAIN: update the Cloudflare tunnel hostname, the Google redirect URI and the LINE webhook/LIFF URLs (printed at the end). Printed flyers stay valid (they use liff.line.me)."
+  fi
+fi
+
 # Checks that would make the app unusable.
 url=$(get_kv PUBLIC_URL)
-[[ "$url" =~ ^https://[^/]+$ ]] || die "PUBLIC_URL must look like https://duty.example.ac.th (no trailing slash). Fix .env or run with --reconfigure."
+[[ "$url" =~ ^https://[^/]+$ ]] && [ "$url" != "https://duty.example.ac.th" ] || die "Set the domain: sudo ./install.sh --domain duty.example.ac.th (or --reconfigure)."
 [ -n "$(get_kv TUNNEL_TOKEN)" ] || die "TUNNEL_TOKEN is empty. Fix .env or run with --reconfigure."
 [ -n "$(get_kv GOOGLE_CLIENT_ID)" ] && [ -n "$(get_kv GOOGLE_CLIENT_SECRET)" ] || warn "Google sign-in is not configured yet: nobody can sign in until GOOGLE_CLIENT_ID/SECRET are set."
 [ -n "$(get_kv GOOGLE_ALLOWED_DOMAINS)" ] || warn "GOOGLE_ALLOWED_DOMAINS is empty: ANY Google Workspace account could sign in to the member page. Set your school domains."
