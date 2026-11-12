@@ -58,8 +58,14 @@ export async function shell(active) {
     ...NAV.map(([href, key]) => el("a", { href, "aria-current": href === active ? "page" : null }, t(key))),
     el("a", { href: "/account", "aria-current": active === "/account" ? "page" : null }, t("nav.account")));
   document.body.prepend(header, mobile);
+  document.body.append(footer());
   return user;
 }
+
+/** Page footer: app name and the credits page. Used on every page. */
+export const footer = () => el("footer", { class: "app-footer helper" },
+  el("span", {}, "SK Duty"), el("span", { "aria-hidden": "true" }, "·"),
+  el("a", { class: "cds--link cds--link--sm", href: "/credits" }, t("credits.link")));
 
 export function button(label, { kind = "primary", size, onclick, type = "button", disabled, full, id } = {}) {
   const cls = ["cds--btn", `cds--btn--${kind}`, size && `cds--btn--${size}`, full && "cds--btn--full"].filter(Boolean).join(" ");

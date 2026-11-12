@@ -1,0 +1,15 @@
+node_modules
+dist
+data
+.git
+.wrangler
+.env
+.env.*
+!.env.example
+.dev.vars
+.admin-token
+assets
+test
+k8s
+docs
+*.md

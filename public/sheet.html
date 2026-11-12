@@ -5,10 +5,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
+<script src="/vendor/xlsx.full.min.js"></script>
 </head>
 <body>
 <main class="page">
@@ -19,8 +21,22 @@
   <div id="grid" style="margin-top:1rem"></div>
   <div class="row" style="margin-top:1rem"><span class="grow"></span><span id="actions"></span></div>
   <div id="review" style="margin-top:1rem"></div>
+
+  <h2 class="h2" data-i18n="sheet.import"></h2>
+  <div class="cds--tile stack">
+    <p class="body secondary"><span data-i18n="sheet.importIntro"></span> <a class="cds--link" href="/duties-template.csv" data-i18n="sheet.template"></a></p>
+    <div class="row">
+      <label class="cds--btn cds--btn--tertiary" for="file" data-i18n="members.chooseFile"></label>
+      <input type="file" id="file" accept=".csv,.xlsx,.xls" hidden>
+      <span id="fileName" class="body secondary"></span>
+      <span class="grow"></span>
+      <span id="publishSlot"></span>
+    </div>
+    <div id="importOut"></div>
+  </div>
 </main>
 <script type="module">
+import { normalizeRows } from "/roster.js";
 import { api, bangkokToday, button, dataTable, el, notification, select, shell, tag, textInput } from "/admin-common.js";
 import { dayShort, errText, issueText, t } from "/i18n.js";
 
@@ -157,6 +173,50 @@ async function publish() {
   dirty = false;
   await load();
   $("msg").replaceChildren(notification("success", t("sheet.published")));
+}
+
+/* ------------------------------------------------- import from a file */
+// Same stage/publish path as the grid. Parsed in the browser (roster.js), revalidated on the server.
+let fileStaged = null;
+const out = $("importOut");
+const summary = (s) => dataTable({ columns: [t("sum.new"), t("sum.unchanged"), t("sum.cancelled")], rows: [[String(s.insert), String(s.keep), String(s.cancel)]] });
+$("file").addEventListener("change", async () => {
+  const f = $("file").files[0];
+  $("publishSlot").replaceChildren();
+  fileStaged = null;
+  out.replaceChildren();
+  if (!f) return;
+  $("fileName").textContent = f.name;
+  const isCsv = /\.csv$/i.test(f.name);
+  // CSV is read raw so dates stay as typed; XLSX date cells arrive as serials.
+  const wb = XLSX.read(await f.arrayBuffer(), { type: "array", raw: isCsv });
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+  const parsed = normalizeRows(aoa, { date1904: !!wb.Workbook?.WBProps?.date1904 });
+  $("file").value = "";
+  if (parsed.errors.length) { out.replaceChildren(notification("error", t("sheet.fileUnreadable"), parsed.errors.join(" · "))); return; }
+  const r = await api("POST", "/admin/api/imports", { rows: parsed.rows });
+  if (!r.ok) {
+    out.replaceChildren(notification("error", t("sheet.fileRejected"), t("sheet.fixRows")),
+      dataTable({ columns: [t("sheet.problem")], rows: (r.data.errors ?? []).map((e) => [issueText(e)]) }));
+    return;
+  }
+  fileStaged = r.data;
+  out.replaceChildren(
+    notification("info", t("sheet.ready", { id: fileStaged.batchId }), t("sheet.review.body", { dates: fileStaged.dates.length, from: fileStaged.dates[0], to: fileStaged.dates.at(-1) })),
+    summary(fileStaged),
+    ...fileStaged.warnings.map((w) => notification("warning", t("sum.keptAsIs"), issueText(w))));
+  $("publishSlot").replaceChildren(button(t("act.publish"), { onclick: publishFile }));
+});
+
+async function publishFile() {
+  if (!fileStaged) return;
+  $("publishSlot").replaceChildren();
+  const r = await api("POST", `/admin/api/imports/${fileStaged.batchId}/publish`);
+  out.replaceChildren(r.ok
+    ? notification("success", t("sheet.published"))
+    : notification("error", t("sheet.publishFailed"), (r.data.errors ?? []).map(issueText).join(" · ")));
+  if (r.ok) { out.append(summary(r.data)); if (!dirty) load(); }
+  fileStaged = null;
 }
 
 load();

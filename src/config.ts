@@ -5,8 +5,15 @@
  */
 export type MessageKind = "REMINDER" | "PROMPT" | "MISSED" | "CONFIRM";
 export type Lang = "th" | "en";
+/** Email notifications: off, only to members not linked to LINE (when planned), or to everyone with a roster email. */
+export type EmailMode = "off" | "fallback" | "all";
+/** Fields of the check-in receipt email. */
+export interface Receipt { member: string; duty: string; location: string; time: string; late: boolean; override: boolean; no: string }
 
 export const config = {
+  /** Shown on the credits page (/healthz). Keep in step with package.json. */
+  version: "1.1.0",
+
   /** Asia/Bangkok is fixed UTC+7 (no DST). Duty dates are Bangkok calendar dates. */
   tzOffsetMinutes: 7 * 60,
 
@@ -28,10 +35,13 @@ export const config = {
   missedAfterMinutes: 30,
   /** Nothing is pushed between these Bangkok times; jobs wait until the end, or fail if past their deadline. */
   quietHours: { start: "21:00", end: "06:00" },
-  /** Send a LINE confirmation after a successful check-in (costs one message each). */
+  /** Email a receipt to the member's roster email after a successful check-in or override (no LINE quota used). */
   confirmOnCheckin: true,
   /** Language of LINE messages to members. */
   messageLanguage: "th" as Lang,
+  /** Email copies of REMINDER/PROMPT/MISSED (needs SMTP, see .env.example). Links point to the member portal (/me).
+   *  Receipts (CONFIRM) are always email, independent of this. */
+  emailMode: "off" as EmailMode,
 
   /** Geofence defaults for new locations. Tune per location during the pilot. [ASSUMPTION] */
   defaultRadiusM: 100,
@@ -53,7 +63,13 @@ export const config = {
     clockSkewMinutes: 5,
   },
 
-  linkCodeTtlMinutes: 15,
+  /** Google sign-in: how long a started sign-in may take. */
+  google: { stateTtlMinutes: 10 },
+
+  /** Member portal (/me): Google sign-in with the roster email; read own records, check in from the browser. */
+  portal: { sessionDays: 30, idleDays: 14, cookieName: "__Host-sdn_member" },
+  /** SMTP: per-message timeout. */
+  emailTimeoutMs: 15000,
 
   /** Admin login. */
   auth: {
@@ -98,8 +114,27 @@ export const config = {
         `✅ Checked in for ${shift} duty at ${time}${late ? " (late)" : " (on time)"}, ${location}.`,
       checkInLabel: "Check in",
       followReply: (url: string) =>
-        `Welcome. To receive duty notices, open ${url} and enter the one-time code from your coordinator.`,
+        `Welcome. To receive duty notices, open ${url} and sign in with your school Google account.`,
       help: (url: string) => `This chat only sends duty notices. Your duties and check-in: ${url}`,
+      email: {
+        reminderSubject: (dateLabel: string) => `Duty reminder: ${dateLabel}`,
+        promptSubject: (shift: string, start: string) => `${shift} duty starts at ${start}`,
+        missedSubject: (shift: string) => `Not checked in yet: ${shift} duty`,
+        receiptSubject: (shift: string, dateLabel: string) => `Check-in receipt: ${shift} duty, ${dateLabel}`,
+        receipt: (r: Receipt) => [
+          "Check-in receipt", "",
+          ...(r.member ? [`Member: ${r.member}`] : []),
+          `Duty: ${r.duty}`, `Location: ${r.location}`,
+          `Checked in: ${r.time} (${r.late ? "late" : "on time"})`,
+          `Method: ${r.override ? "recorded by a coordinator" : "location check (GPS)"}`,
+          `Receipt no.: ${r.no}`, "",
+          "Keep this email as your record. If anything here is wrong, tell your duty coordinator and quote the receipt number.",
+        ].join("\n"),
+        checkInAt: (url: string) => `Check in on your duty page: ${url}`,
+        footer: (url: string) => `This is an automatic message from SK Duty. Your duty records: ${url}`,
+        testSubject: "SK Duty: test email",
+        testBody: "Email from SK Duty works. Members will receive duty notices from this address.",
+      },
     },
     th: {
       reminder: (dateLabel: string, lines: string[], url: string, early: number) =>
@@ -114,8 +149,27 @@ export const config = {
         `✅ เช็กอินเวร ${shift} สำเร็จ เวลา ${time} น.${late ? " (สาย)" : " (ตรงเวลา)"} ที่ ${location}`,
       checkInLabel: "เช็กอิน",
       followReply: (url: string) =>
-        `ยินดีต้อนรับ หากต้องการรับการแจ้งเตือนเวร กรุณาเปิด ${url} แล้วกรอกรหัสใช้ครั้งเดียวที่ได้รับจากผู้ดูแลเวร`,
+        `ยินดีต้อนรับ หากต้องการรับการแจ้งเตือนเวร กรุณาเปิด ${url} แล้วเข้าสู่ระบบด้วยบัญชี Google ของโรงเรียน`,
       help: (url: string) => `แชตนี้ใช้ส่งการแจ้งเตือนเวรเท่านั้น ดูเวรและเช็กอินได้ที่ ${url}`,
+      email: {
+        reminderSubject: (dateLabel: string) => `แจ้งเตือนเวร${dateLabel}`,
+        promptSubject: (shift: string, start: string) => `เวร ${shift} เริ่ม ${start} น.`,
+        missedSubject: (shift: string) => `ยังไม่ได้เช็กอินเวร ${shift}`,
+        receiptSubject: (shift: string, dateLabel: string) => `ใบยืนยันเช็กอิน: เวร ${shift} ${dateLabel}`,
+        receipt: (r: Receipt) => [
+          "ใบยืนยันการเช็กอิน", "",
+          ...(r.member ? [`สมาชิก: ${r.member}`] : []),
+          `เวร: ${r.duty} น.`, `จุดเวร: ${r.location}`,
+          `เช็กอินเวลา: ${r.time} น. (${r.late ? "สาย" : "ตรงเวลา"})`,
+          `วิธี: ${r.override ? "บันทึกโดยผู้ดูแล" : "ตรวจตำแหน่ง (GPS)"}`,
+          `เลขที่: ${r.no}`, "",
+          "เก็บอีเมลนี้ไว้เป็นหลักฐาน หากข้อมูลไม่ถูกต้อง แจ้งผู้ดูแลเวรพร้อมเลขที่ใบยืนยัน",
+        ].join("\n"),
+        checkInAt: (url: string) => `เช็กอินได้ที่หน้าเวรของคุณ: ${url}`,
+        footer: (url: string) => `ข้อความอัตโนมัติจาก SK Duty ดูประวัติเวรของคุณได้ที่ ${url}`,
+        testSubject: "SK Duty: ทดสอบอีเมล",
+        testBody: "ระบบส่งอีเมลของ SK Duty ใช้งานได้ สมาชิกจะได้รับการแจ้งเตือนเวรจากที่อยู่นี้",
+      },
     },
   },
 

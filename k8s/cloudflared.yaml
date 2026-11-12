@@ -1,0 +1,40 @@
+# Cloudflare Tunnel connector (outbound only: no open ports or public IP needed on the old computer).
+# Create the tunnel in the Cloudflare dashboard (Zero Trust > Networks > Tunnels), copy its token into tunnel.env,
+# and add a Public Hostname:  duty.<your-domain>  ->  HTTP  ->  sk-duty-notify.sk-duty-notify.svc.cluster.local:80
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  labels: { app: cloudflared }
+spec:
+  replicas: 2   # two connectors: one can restart without dropping the site
+  selector:
+    matchLabels: { app: cloudflared }
+  template:
+    metadata:
+      labels: { app: cloudflared }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.9.3
+          args: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"]
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: cloudflared-token, key: TUNNEL_TOKEN }
+          livenessProbe:
+            httpGet: { path: /ready, port: 2000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

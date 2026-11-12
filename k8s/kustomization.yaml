@@ -1,0 +1,22 @@
+# kubectl apply -k k8s/
+# Before the first apply: cp app.env.example app.env, cp tunnel.env.example tunnel.env, fill both in (both gitignored).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sk-duty-notify
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - cloudflared.yaml
+configMapGenerator:
+  - name: sk-duty-notify-config
+    envs: [config.env]
+secretGenerator:
+  - name: sk-duty-notify-secrets
+    envs: [app.env]
+  - name: cloudflared-token
+    envs: [tunnel.env]
+images:
+  - name: sk-duty-notify
+    newTag: 1.1.0

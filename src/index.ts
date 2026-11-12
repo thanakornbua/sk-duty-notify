@@ -1,5 +1,6 @@
 import { handleRequest } from "./app";
 import { FixedClock, systemClock } from "./clock";
+import { emailClientFor, type EmailClient } from "./email";
 import type { LineClient } from "./line";
 import { FakeLineClient } from "./line-fake";
 import { HttpLineClient } from "./line-http";
@@ -20,6 +21,19 @@ export interface Env {
   ADMIN_TOKEN?: string;
   /** "fake" = dev only: in-memory LINE, fake ID tokens accepted. Never set in production. */
   LINE_CLIENT?: string;
+  /** Google sign-in (OAuth client of type "Web application"). Redirect URI: <origin>/auth/google/callback. */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  /** Comma-separated Google Workspace domains allowed to sign in, e.g. "example.ac.th,student.example.ac.th". Empty = any. */
+  GOOGLE_ALLOWED_DOMAINS?: string;
+  /** "1" = also allow username + password admin login (break-glass; accounts from scripts/create-admin.mjs). */
+  ALLOW_PASSWORD_LOGIN?: string;
+  /** Public origin (no trailing slash), used for links in emails. The self-hosted server always sets it. */
+  PUBLIC_URL?: string;
+  /** Outgoing email. The self-hosted server binds an SMTP client when SMTP_HOST is set; Workers has none by default. */
+  EMAIL?: EmailClient;
+  /** "fake" = dev only: in-memory email. */
+  EMAIL_CLIENT?: string;
   /** Dev/perf only: x-test-now header and /dev/* routes. Never set in production. */
   ALLOW_TEST_CLOCK?: string;
 }
@@ -40,11 +54,13 @@ export default {
   async fetch(req, env, ctx) {
     const override = env.ALLOW_TEST_CLOCK === "1" ? Number(req.headers.get("x-test-now")) : NaN;
     const clock = Number.isFinite(override) && override > 0 ? new FixedClock(override) : systemClock;
-    if (new URL(req.url).pathname.match(/^\/(api|admin\/api|webhook|dev)\//)) await loadSchedule(env.DB);
+    if (new URL(req.url).pathname.match(/^\/(api|admin\/api|me\/api|webhook|dev|auth)\//)) await loadSchedule(env.DB);
     return handleRequest(req, env, clock, lineClientFor(env), (p) => ctx.waitUntil(p));
   },
   async scheduled(_event, env): Promise<void> {
     await loadSchedule(env.DB);
-    await runScheduler({ db: env.DB, clock: systemClock, line: lineClientFor(env), liffId: env.LIFF_ID });
+    await runScheduler({
+      db: env.DB, clock: systemClock, line: lineClientFor(env), liffId: env.LIFF_ID, email: emailClientFor(env), publicUrl: env.PUBLIC_URL,
+    });
   },
 } satisfies ExportedHandler<Env>;

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+<script src="/vendor/qrcode-generator-1.4.4.js"></script>
+<style>
+  .sheet-grid { display: grid; gap: 0; background: #fff; color: #161616; max-width: 52rem; }
+  .sheet-grid[data-n="1"] { grid-template-columns: 1fr; }
+  .sheet-grid[data-n="2"] { grid-template-columns: 1fr; }
+  .sheet-grid[data-n="4"] { grid-template-columns: 1fr 1fr; }
+  .flyer { border: 1px dashed #8d8d8d; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; text-align: center; break-inside: avoid; }
+  .flyer h2 { font-size: 1.5rem; line-height: 2rem; margin: .5rem 0 1rem; font-weight: 600; }
+  .flyer .qr { width: 14rem; height: 14rem; }
+  .sheet-grid[data-n="4"] .qr { width: 10rem; height: 10rem; }
+  .sheet-grid[data-n="4"] .flyer h2 { font-size: 1.125rem; line-height: 1.5rem; }
+  .flyer ol { list-style: decimal; text-align: left; margin: 1rem 0 .5rem; padding-left: 1.5rem; font-size: .9375rem; line-height: 1.5; }
+  .flyer li + li { margin-top: .25rem; }
+  .flyer .url { font-family: "IBM Plex Mono", monospace; font-size: .75rem; color: #525252; word-break: break-all; }
+  .flyer img { width: 3rem; height: 3rem; }
+  @media print {
+    @page { size: A4; margin: 10mm; }
+    .cds--header, .mobile-nav, .no-print { display: none !important; }
+    html, body { background: #fff !important; }
+    .page { padding: 0 !important; max-width: none; }
+    .sheet-grid { max-width: none; }
+    .sheet-grid[data-n="1"] .flyer { min-height: 270mm; justify-content: center; }
+    .sheet-grid[data-n="2"] .flyer { min-height: 135mm; }
+    .sheet-grid[data-n="4"] .flyer { min-height: 135mm; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="no-print">
+    <h1 class="h1" data-i18n="flyer.title"></h1>
+    <p class="body secondary" data-i18n="flyer.intro"></p>
+    <div id="controls" class="row" style="margin:1.5rem 0"></div>
+  </div>
+  <div id="out"></div>
+</main>
+<script type="module">
+// Printable sign-up flyer: QR code to the LIFF link page (https://liff.line.me/<LIFF_ID>/link).
+// Scanning it with a phone camera opens LINE, which runs the Google linking flow.
+import { button, el, notification, shell } from "/admin-common.js";
+import { t } from "/i18n.js";
+
+await shell("/admin");
+document.title = t("flyer.title");
+const out = document.getElementById("out");
+
+const cfg = await fetch("/api/liff-config").then((r) => r.json()).catch(() => ({}));
+if (!cfg.liffId) {
+  out.append(notification("error", t("flyer.noLiff")));
+} else {
+  const url = `https://liff.line.me/${cfg.liffId}/link`;
+
+  /** QR as an SVG built with DOM calls (no innerHTML). Error correction M survives some print smudging. */
+  function qrSvg(text) {
+    const q = qrcode(0, "M");
+    q.addData(text);
+    q.make();
+    const n = q.getModuleCount(), quiet = 4, size = n + quiet * 2;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+    svg.setAttribute("class", "qr");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", text);
+    svg.setAttribute("shape-rendering", "crispEdges");
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("width", size); bg.setAttribute("height", size); bg.setAttribute("fill", "#fff");
+    svg.append(bg);
+    let d = "";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += `M${c + quiet} ${r + quiet}h1v1h-1z`;
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d); path.setAttribute("fill", "#000");
+    svg.append(path);
+    return svg;
+  }
+
+  const flyer = () => el("div", { class: "flyer" },
+    el("img", { src: "/brand/emblem-96.png", alt: "" }),
+    el("h2", {}, t("flyer.heading")),
+    qrSvg(url),
+    el("ol", {}, ...["flyer.step1", "flyer.step2", "flyer.step3", "flyer.step4"].map((k) => el("li", {}, t(k)))),
+    el("div", { class: "url" }, url));
+
+  function render(n) {
+    out.replaceChildren(el("div", { class: "sheet-grid", "data-n": String(n) }, ...Array.from({ length: n }, flyer)));
+  }
+  let current = 1;
+  const pick = (n) => button(String(n), { kind: "tertiary", size: "md", onclick: () => { current = n; render(n); } });
+  document.getElementById("controls").append(
+    el("span", { class: "body secondary" }, t("flyer.copies")), pick(1), pick(2), pick(4),
+    el("span", { class: "grow" }), button(t("flyer.print"), { onclick: () => window.print() }));
+  render(current);
+}
+</script>
+</body>
+</html>

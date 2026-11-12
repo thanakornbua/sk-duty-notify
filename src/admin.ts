@@ -1,17 +1,18 @@
 import type { WaitUntil } from "./app";
 import { sendConfirm } from "./app";
 import {
-  changePassword, clearCookie, createAdmin, currentAdmin, listAdmins, login, logout, resetAdminPassword, sessionCookie,
-  setAdminDisabled, type AdminUser,
+  changePassword, clearCookie, createAdmin, currentAdmin, EMAIL_RE, listAdmins, login, logout, sessionCookie, setAdminDisabled,
+  type AdminUser,
 } from "./auth";
-import { confirmKey, queueConfirm } from "./checkin";
+import { confirmKeys, queueConfirm } from "./checkin";
 import type { Clock } from "./clock";
 import { config } from "./config";
 import type { Env } from "./index";
 import { publishImport, stageImport } from "./importer";
 import type { LineClient } from "./line";
-import { issueLinkCode } from "./linking";
+import { allowedDomains, googleConfigured } from "./google";
 import { attemptsFor, buildToday, exportCsv } from "./report";
+import { emailClientFor } from "./email";
 import { saveSchedule, scheduleInfo } from "./settings";
 import { addDays, bangkokDateOf, bangkokTimeOf } from "./time";
 import { isStr, json, readJson } from "./util";
@@ -44,7 +45,11 @@ export async function handleAdmin(
   const now = clock.now();
   if (!sameOrigin(req)) return json({ error: "cross_origin" }, 403);
 
+  if (req.method === "GET" && path === "/admin/api/login-options") {
+    return json({ google: googleConfigured(env), password: env.ALLOW_PASSWORD_LOGIN === "1", domains: allowedDomains(env) });
+  }
   if (req.method === "POST" && path === "/admin/api/login") {
+    if (env.ALLOW_PASSWORD_LOGIN !== "1") return json({ error: "password_login_disabled" }, 404);
     if (env.IP_LIMIT && ipHash && !(await env.IP_LIMIT.limit({ key: `login:${ipHash}` })).success) return json({ error: "rate_limited" }, 429);
     const b = await readJson(req);
     const res = await login(db, clock, b?.username, b?.password, { ipHash, userAgent: req.headers.get("user-agent") });
@@ -77,30 +82,37 @@ export async function handleAdmin(
     /* ------------------------------------------------------------- members */
     case "GET /admin/api/members": {
       const { results } = await db.prepare(
-        `SELECT id, staff_code, label, grp, active, line_user_id IS NOT NULL AS linked, linked_at, consent_at FROM members ORDER BY staff_code`,
+        `SELECT id, staff_code, label, grp, email, active, line_user_id IS NOT NULL AS linked, linked_at, consent_at FROM members ORDER BY staff_code`,
       ).all();
       return json({ members: results });
     }
     case "POST /admin/api/members": {
-      // Upsert [{staffCode, label, group?, active?}]. Synthetic data only in this repo.
+      // Upsert [{staffCode, label, email?, group?, active?}]. The email is the member's Google account (used to link LINE).
       const body = await readJson(req);
       const list = body?.members;
       if (!Array.isArray(list) || !list.length || list.length > 1000) return json({ error: "members_required" }, 400);
       const bad = list.findIndex((m) => !CODE_RE.test(m?.staffCode ?? "") || !isStr(m?.label, 100));
       if (bad >= 0) return json({ error: "invalid_member", index: bad + 1 }, 400);
-      await db.batch([
-        ...list.map((m) => db.prepare(
-          `INSERT INTO members (staff_code, label, grp, active, created_at) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (staff_code) DO UPDATE SET label = excluded.label, grp = excluded.grp, active = excluded.active`,
-        ).bind(m.staffCode, m.label, typeof m.group === "string" ? m.group.slice(0, 50) : null, m.active === false ? 0 : 1, now)),
-        audit(now, "members_upserted", { count: list.length }),
-      ]);
+      const domains = allowedDomains(env);
+      const emails = list.map((m) => (typeof m.email === "string" && m.email.trim() ? m.email.trim().toLowerCase() : null));
+      const badMail = emails.findIndex((e) => e !== null && (!EMAIL_RE.test(e) || (domains.length > 0 && !domains.includes(e.split("@")[1]))));
+      if (badMail >= 0) return json({ error: "invalid_member_email", index: badMail + 1, domains: domains.join(", ") }, 400);
+      const dup = emails.findIndex((e, i) => e !== null && emails.indexOf(e) !== i);
+      if (dup >= 0) return json({ error: "duplicate_member_email", index: dup + 1 }, 400);
+      try {
+        await db.batch([
+          ...list.map((m, i) => db.prepare(
+            `INSERT INTO members (staff_code, label, grp, email, active, created_at) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (staff_code) DO UPDATE SET label = excluded.label, grp = excluded.grp, active = excluded.active,
+               email = COALESCE(excluded.email, members.email)`,
+          ).bind(m.staffCode, m.label, typeof m.group === "string" ? m.group.slice(0, 50) : null, emails[i], m.active === false ? 0 : 1, now)),
+          audit(now, "members_upserted", { count: list.length }),
+        ]);
+      } catch (e) {
+        if (String(e).includes("UNIQUE") && String(e).includes("email")) return json({ error: "email_used_by_other_member" }, 409);
+        throw e;
+      }
       return json({ ok: true, count: list.length });
-    }
-    case "POST /admin/api/members/:id/link-code": {
-      const m = await db.prepare("SELECT id FROM members WHERE id = ? AND active = 1").bind(id).first();
-      if (!m) return json({ error: "member_not_found" }, 404);
-      return json(await issueLinkCode(db, clock, id, actor), 201);
     }
     case "POST /admin/api/members/:id/unlink": {
       await db.batch([
@@ -211,10 +223,10 @@ export async function handleAdmin(
         ).bind(now, late, note, id, admin.username),
         db.prepare("INSERT INTO audit_log (at, actor, event, detail) SELECT ?, ?, 'duty_override', ? WHERE changes() = 1")
           .bind(now, actor, JSON.stringify({ dutyId: id, note, late })),
-        ...(config.confirmOnCheckin ? [queueConfirm(db, now, id)] : []),
+        ...queueConfirm(db, now, id),
       ]);
       if (upd.meta.changes !== 1) return json({ error: "override_conflict" }, 409);
-      if (config.confirmOnCheckin) sendConfirm(env, clock, line, confirmKey(id), waitUntil);
+      if (config.confirmOnCheckin) sendConfirm(env, clock, line, confirmKeys(id), waitUntil);
       return json({ ok: true });
     }
     case "GET /admin/api/export.csv": {
@@ -227,7 +239,23 @@ export async function handleAdmin(
 
     /* ------------------------------------------------- scheduling settings */
     case "GET /admin/api/settings":
-      return json(await scheduleInfo(db));
+      return json({ ...(await scheduleInfo(db)), emailConfigured: !!(emailClientFor(env) && env.PUBLIC_URL) });
+    case "POST /admin/api/email/test": {
+      // Sends one test message to the signed-in admin's Google email, to check the SMTP settings.
+      const email = emailClientFor(env);
+      if (!email || !env.PUBLIC_URL) return json({ error: "email_not_configured" }, 503);
+      const row = await db.prepare("SELECT email FROM admin_users WHERE id = ?").bind(admin.id).first<{ email: string | null }>();
+      if (!row?.email) return json({ error: "admin_has_no_email" }, 400);
+      const E = config.messages[config.messageLanguage].email;
+      let r;
+      try {
+        r = await email.send({ to: row.email, subject: E.testSubject, text: E.testBody, messageId: `<test-${crypto.randomUUID()}@${new URL(env.PUBLIC_URL).hostname}>` });
+      } catch (e) {
+        r = { kind: "temporary" as const, message: String(e) };
+      }
+      await audit(now, "email_test", { to: row.email, result: r.kind }).run();
+      return r.kind === "accepted" ? json({ ok: true, to: row.email }) : json({ error: "email_send_failed", detail: r.message.slice(0, 200) }, 502);
+    }
     case "POST /admin/api/settings": {
       const res = await saveSchedule(db, clock, actor, await readJson(req));
       return res.ok ? json({ ok: true, schedule: res.value, replanned: res.replanned }) : json({ error: res.error, field: res.field }, 400);
@@ -239,19 +267,15 @@ export async function handleAdmin(
       return json({
         self: admin.id,
         admins: rows.map((r) => ({
-          id: r.id, username: r.username, displayName: r.display_name, mustChange: r.must_change === 1, disabled: r.disabled === 1,
+          id: r.id, username: r.username, email: r.email, displayName: r.display_name, mustChange: r.must_change === 1, disabled: r.disabled === 1,
           locked: (r.locked_until ?? 0) > now, createdAt: r.created_at, lastLoginAt: r.last_login_at,
         })),
       });
     }
     case "POST /admin/api/admins": {
       const b = await readJson(req);
-      const res = await createAdmin(db, clock, admin, b?.username, b?.displayName);
-      return res.ok ? json(res, 201) : json({ error: res.error }, res.status);
-    }
-    case "POST /admin/api/admins/:id/reset-password": {
-      const res = await resetAdminPassword(db, clock, admin, id);
-      return res.ok ? json(res) : json({ error: res.error }, res.status);
+      const res = await createAdmin(db, clock, admin, b?.email, b?.displayName, allowedDomains(env));
+      return res.ok ? json(res, 201) : json({ error: res.error, domains: res.domains }, res.status);
     }
     case "POST /admin/api/admins/:id/disable":
     case "POST /admin/api/admins/:id/enable": {

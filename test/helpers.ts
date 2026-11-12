@@ -11,7 +11,7 @@ import { sha256Hex } from "../src/util";
 
 export { MIN };
 export const db = env.DB;
-export const TABLES = ["settings", "admin_sessions", "admin_users", "audit_log", "webhook_events", "scheduler_heartbeat", "outbox", "checkins", "nonces", "duties", "roster_dates",
+export const TABLES = ["member_sessions", "oauth_states", "settings", "admin_sessions", "admin_users", "audit_log", "webhook_events", "scheduler_heartbeat", "outbox", "checkins", "nonces", "duties", "roster_dates",
   "import_batches", "geofence_points", "locations", "link_codes", "members"];
 export const D = "2026-03-02"; // default duty date (a Monday)
 export const LIFF = "test-liff";
@@ -32,6 +32,7 @@ let adminHash: Promise<string> | undefined;
 /** Empty every table, then add one signed-in admin (session cookie ADMIN_SESSION, password already changed). */
 export async function reset() {
   applySchedule({}); // back to config.ts defaults
+  for (const k of Object.keys(envExtra)) delete envExtra[k];
   adminHash ??= hashPassword(ADMIN.password, 1000);
   await db.batch([
     ...TABLES.map((t) => db.prepare(`DELETE FROM ${t}`)),
@@ -88,10 +89,13 @@ export function call(line: FakeLineClient, clock: Clock, method: string, path: s
   return handleWithBackground(req, clock, line);
 }
 
+/** Extra env for call() (e.g. EMAIL, PUBLIC_URL). Cleared by reset(). */
+export const envExtra: Record<string, unknown> = {};
+
 /** Runs the request, then awaits anything it scheduled with waitUntil (e.g. the check-in confirmation push). */
 async function handleWithBackground(req: Request, clock: Clock, line: FakeLineClient) {
   const background: Promise<unknown>[] = [];
-  const res = await handleRequest(req, { ...env, LIFF_ID: LIFF }, clock, line, (p) => background.push(p));
+  const res = await handleRequest(req, { ...env, LIFF_ID: LIFF, ...envExtra } as never, clock, line, (p) => background.push(p));
   await Promise.all(background);
   return res;
 }

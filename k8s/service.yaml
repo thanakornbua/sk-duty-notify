@@ -1,0 +1,9 @@
+# Cluster-internal only. The public entrance is the Cloudflare Tunnel (cloudflared.yaml); nothing is exposed on the LAN.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sk-duty-notify
+spec:
+  selector: { app: sk-duty-notify }
+  ports:
+    - { name: http, port: 80, targetPort: http }

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="lang-corner" id="lang"></div>
+<main class="page page--bare" style="max-width:44rem">
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <h1 class="h1" style="margin-top:.5rem">SK Duty</h1>
+  <p class="body secondary" data-i18n="credits.about"></p>
+  <p class="helper" id="version"></p>
+
+  <h2 class="h2" data-i18n="credits.developedBy"></h2>
+  <a class="cds--tile credit-dev" href="https://thanakorn.site" rel="noopener" style="display:block">
+    <img src="/brand/tan-wordmark.svg" alt="Tan · thanakorn.site: Thanakorn Buathongtanakarn">
+  </a>
+  <p class="helper" style="margin-top:.5rem" data-i18n="credits.logoNote"></p>
+
+  <h2 class="h2" data-i18n="credits.license"></h2>
+  <p class="body" data-i18n="credits.licenseBody"></p>
+
+  <h2 class="h2" data-i18n="credits.thirdParty"></h2>
+  <ul class="link-list body" id="libs"></ul>
+</main>
+<script type="module">
+import { el, footer, langSwitch } from "/admin-common.js";
+import { applyStatic, t } from "/i18n.js";
+
+applyStatic();
+document.title = t("credits.title");
+document.getElementById("lang").append(langSwitch());
+const foot = footer();
+foot.style.maxWidth = "44rem";
+document.body.append(foot);
+
+const v = await fetch("/healthz").then((r) => r.json()).catch(() => ({}));
+if (v.version) document.getElementById("version").textContent = t("credits.version", { v: v.version });
+
+// [name, licence, what it does here]
+const LIBS = [
+  ["IBM Carbon Design System (@carbon/styles 1.118.0)", "Apache-2.0", "credits.lib.carbon"],
+  ["IBM Plex Sans, Sans Thai Looped, Mono", "SIL OFL 1.1", "credits.lib.plex"],
+  ["Space Grotesk", "SIL OFL 1.1", "credits.lib.grotesk"],
+  ["LINE Front-end Framework (LIFF SDK 2.24.0)", "LINE", "credits.lib.liff"],
+  ["Leaflet 1.9.4", "BSD-2-Clause", "credits.lib.leaflet"],
+  ["SheetJS Community Edition", "Apache-2.0", "credits.lib.sheetjs"],
+  ["qrcode-generator 1.4.4", "MIT", "credits.lib.qr"],
+  ["Nodemailer", "MIT", "credits.lib.nodemailer"],
+  ["OpenStreetMap", "ODbL", "credits.lib.osm"],
+];
+document.getElementById("libs").append(...LIBS.map(([name, lic, what]) =>
+  el("li", {}, el("strong", {}, name), " · ", el("span", { class: "mono helper" }, lic), el("div", { class: "helper" }, t(what)))));
+</script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sk-duty-notify
+  labels: { app: sk-duty-notify }
+spec:
+  # Exactly one: SQLite has one writer, and the per-minute scheduler must run once.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: sk-duty-notify }
+  template:
+    metadata:
+      labels: { app: sk-duty-notify }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000   # "node" in the image
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: app
+          image: sk-duty-notify:1.1.0
+          imagePullPolicy: IfNotPresent   # imported into k3s locally; set a registry image to pull instead
+          ports:
+            - { name: http, containerPort: 8787 }
+          envFrom:
+            - configMapRef: { name: sk-duty-notify-config }
+            - secretRef: { name: sk-duty-notify-secrets }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: sk-duty-notify-data }

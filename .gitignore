@@ -4,3 +4,7 @@ node_modules/
 .env
 dist/
 .admin-token
+data/
+k8s/app.env
+k8s/tunnel.env
+assets/

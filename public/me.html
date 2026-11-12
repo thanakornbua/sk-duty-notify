@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="lang-corner" id="lang"></div>
+<main class="page page--bare" style="max-width:56rem">
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" data-i18n="app.name"></p>
+  <h1 class="h1" data-i18n="me.title"></h1>
+  <div id="msg"></div>
+
+  <!-- Signed out -->
+  <div id="signin" class="stack" hidden style="max-width:30rem">
+    <p class="body secondary" data-i18n="me.intro"></p>
+    <a class="cds--btn cds--btn--primary cds--btn--full" href="/auth/google/member" data-i18n="login.google"></a>
+  </div>
+
+  <!-- Signed in -->
+  <div id="portal" hidden>
+    <div class="who-line"><span class="body" id="who"></span><span class="grow"></span><span id="outSlot"></span></div>
+    <div id="lineNote" style="margin-top:1rem"></div>
+
+    <h2 class="h2" data-i18n="me.today"></h2>
+    <div id="consent" class="cds--tile stack" hidden>
+      <h3 class="h3" data-i18n="liff.consent.title"></h3>
+      <p class="body" id="consentText"></p>
+      <div id="acceptSlot"></div>
+    </div>
+    <div id="todayDuties" class="stack"></div>
+    <div id="action" class="stack" style="margin-top:1rem;max-width:30rem" hidden>
+      <div id="checkinSlot"></div>
+      <p class="helper" id="hint"></p>
+    </div>
+    <div id="checkMsg" style="margin-top:1rem;max-width:30rem"></div>
+
+    <h2 class="h2" data-i18n="me.summary"></h2>
+    <p class="helper" id="range"></p>
+    <div class="kpis kpis--small" id="kpis" style="margin-top:.5rem"></div>
+
+    <h2 class="h2" data-i18n="me.upcoming"></h2>
+    <div id="upcoming"></div>
+    <h2 class="h2" data-i18n="me.history"></h2>
+    <div id="history"></div>
+  </div>
+</main>
+<script type="module">
+// Member portal: the member's own duties, check-in history and a browser check-in (Google session; no LINE needed).
+import { button, dataTable, el, footer, langSwitch, notification, tag } from "/admin-common.js";
+import { applyStatic, dateLong, has, hhmm, label, lang, t } from "/i18n.js";
+
+applyStatic();
+document.title = t("me.title");
+document.getElementById("lang").append(langSwitch());
+const foot = footer();
+foot.style.maxWidth = "56rem";
+document.body.append(foot);
+const $ = (id) => document.getElementById(id);
+const show = (id, kind, title, sub = "") => $(id).replaceChildren(...(kind ? [notification(kind, title, sub)] : []));
+
+async function call(method, path, body) {
+  const res = await fetch(path, { method, credentials: "same-origin", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+
+const params = new URLSearchParams(location.search);
+const err = params.get("error");
+if (err) {
+  show("msg", "error", has(`ge.${err}.t`) ? t(`ge.${err}.t`) : t("liff.error"), has(`ge.${err}.b`) ? t(`ge.${err}.b`) : err);
+  history.replaceState(null, "", "/me");
+}
+
+/* ------------------------------------------------------- today + check-in */
+const reason = (code) => (has(`lr.${code}.t`) ? [t(`lr.${code}.t`), t(`lr.${code}.b`)] : [t("liff.error"), String(code ?? "")]);
+let state = null, skew = 0, timer = null;
+const checkin = button(t("liff.checkIn"), { full: true });
+$("checkinSlot").append(checkin);
+$("acceptSlot").append(button(t("liff.consent.accept"), { full: true, onclick: async () => { await call("POST", "/me/api/consent", {}); await loadToday(); } }));
+
+async function loadToday() {
+  const { status, data } = await call("POST", "/me/api/checkin/start", {});
+  if (status !== 200) { const [a, b] = reason(data.error); show("checkMsg", "error", a, b); return; }
+  state = data;
+  skew = data.serverNow - Date.now();
+  $("consent").hidden = !data.needsConsent;
+  $("consentText").textContent = data.consentText[lang()] ?? data.consentText.en;
+  $("todayDuties").replaceChildren(...(data.duties.length ? data.duties.map((d) => el("div", { class: "cds--tile" },
+    el("div", { class: "h3" }, `${d.shift} · ${hhmm(d.startAt)}–${hhmm(d.endAt)}`),
+    el("p", { class: "body secondary" }, d.location),
+    el("div", { style: "margin-top:.5rem" }, statusTag(d.status, d.late, d.checkedInAt, d)))) : [el("p", { class: "body secondary" }, t("liff.noDuty"))]));
+  const cur = data.current && data.duties.find((d) => d.id === data.current.dutyId);
+  $("action").hidden = !cur || data.needsConsent;
+  clearInterval(timer);
+  if (!cur) return;
+  const tick = () => {
+    const now = Date.now() + skew;
+    const open = now >= cur.opensAt && now <= cur.closesAt;
+    checkin.disabled = !open;
+    $("hint").textContent = open ? t("liff.onSite", { shift: cur.shift, location: cur.location }) : t("liff.opensAt", { time: hhmm(cur.opensAt) });
+  };
+  tick();
+  timer = setInterval(tick, 5000);
+}
+
+function statusTag(status, late, at, d) {
+  if (status === "CHECKED_IN") return tag(t("liff.checkedIn", { time: hhmm(at) }) + (late ? ` · ${t("liff.late")}` : ""), late ? "magenta" : "green");
+  if (status === "MISSED") return tag(t("liff.missed"), "red");
+  if (d?.opensAt) return tag(t("liff.window", { from: hhmm(d.opensAt), to: hhmm(d.closesAt) }), "gray");
+  return tag(label("status", status.toLowerCase()), "gray");
+}
+
+const position = () => new Promise((resolve, reject) =>
+  navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }));
+
+checkin.addEventListener("click", async () => {
+  checkin.disabled = true;
+  show("checkMsg", "info", t("liff.locating"));
+  let pos;
+  try {
+    pos = await position();
+  } catch (e) {
+    if (e.code === 1) show("checkMsg", "error", t("liff.locOff.title"), t("me.locOff"));
+    else show("checkMsg", "error", t("liff.noLoc.title"), t("liff.noLoc.body"));
+    checkin.disabled = false;
+    return;
+  }
+  show("checkMsg", "info", t("liff.checking"));
+  const { coords } = pos;
+  const { data } = await call("POST", "/me/api/checkin/submit", {
+    dutyId: state.current.dutyId, nonce: state.current.nonce,
+    lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, clientTs: Date.now(),
+  });
+  await Promise.all([loadToday(), loadRecords()]);
+  if (data.result === "ok") show("checkMsg", "success", t("liff.done.title"),
+    [data.duty ? `${data.duty.shift} · ${hhmm(data.duty.checkedInAt)} · ${t(data.duty.late ? "liff.done.late" : "liff.done.onTime")}` : "",
+      data.confirmQueued ? t("liff.done.message") : ""].filter(Boolean).join(" · "));
+  else if (data.result === "outside_geofence") show("checkMsg", "error", t("liff.far.title"), t("liff.far.body", { dist: Math.round(data.distanceM), radius: data.radiusM }));
+  else if (data.result === "low_accuracy") show("checkMsg", "error", t("liff.imprecise.title"), t("liff.imprecise.body", { acc: Math.round(coords.accuracy), need: data.allowedAccuracyM }));
+  else { const [a, b] = reason(data.reason ?? data.error); show("checkMsg", "error", a, b); }
+});
+
+/* ---------------------------------------------------------------- records */
+async function loadRecords() {
+  const { status, data } = await call("GET", "/me/api/records");
+  if (status !== 200) return;
+  $("range").textContent = t("me.range", { from: dateLong(data.from), to: dateLong(data.to) });
+  const k = (n, key) => el("div", { class: "cds--tile" }, el("span", { class: "kpi" }, String(n)), el("span", { class: "helper" }, t(key)));
+  const past = data.duties.filter((d) => d.date < data.today || d.status !== "PENDING");
+  const kept = past.filter((d) => d.status === "CHECKED_IN").length;
+  $("kpis").replaceChildren(
+    k(past.length, "me.k.past"), k(kept, "me.k.checkedIn"), k(data.totals.late, "me.k.late"), k(data.totals.missed, "me.k.missed"),
+    k(data.duties.filter((d) => d.date > data.today).length, "me.k.upcoming"),
+    k(past.length ? `${Math.round((kept / past.length) * 100)}%` : "–", "me.k.rate"));
+
+  const when = (d) => [el("div", {}, dateLong(d.date)), el("span", { class: "helper" }, `${d.shift} · ${hhmm(d.startAt)}–${hhmm(d.endAt)}`)];
+  const up = data.duties.filter((d) => d.date > data.today && d.status === "PENDING").reverse();
+  $("upcoming").replaceChildren(dataTable({
+    columns: [t("me.col.when"), t("me.col.location")],
+    rows: up.map((d) => [el("div", {}, ...when(d)), d.location]), empty: t("me.noUpcoming"),
+  }));
+  const hist = past;
+  $("history").replaceChildren(dataTable({
+    columns: [t("me.col.when"), t("me.col.location"), t("me.col.status"), t("me.col.attempts")],
+    rows: hist.map((d) => {
+      const last = d.attempts.at(-1);
+      return [el("div", {}, ...when(d)), d.location,
+        el("div", {}, statusTag(d.status, d.late, d.checkedInAt), d.source === "override" ? el("span", { class: "helper" }, t("me.override")) : ""),
+        d.attempts.length ? el("div", {}, String(d.attempts.length),
+          last && last.result !== "ok" ? el("span", { class: "helper" }, `${t("me.lastTry")}: ${label("result", last.result)}${last.reason ? ` (${label("reason", last.reason)})` : ""}`) : "") : "0"];
+    }),
+    empty: t("me.noHistory"),
+  }));
+}
+const who = await call("GET", "/me/api/me");
+if (who.status !== 200) {
+  $("signin").hidden = false;
+} else {
+  $("portal").hidden = false;
+  const m = who.data.member;
+  $("who").replaceChildren(el("strong", {}, m.label), " · ", el("span", { class: "mono" }, m.staffCode), m.group ? ` · ${m.group}` : "",
+    m.email ? el("span", { class: "helper", style: "display:block" }, m.email) : "");
+  $("outSlot").append(button(t("act.signOut"), { kind: "ghost", size: "sm", onclick: async () => { await call("POST", "/me/api/logout"); location.replace("/me"); } }));
+  if (!m.linked) {
+    const cfg = await fetch("/api/liff-config").then((r) => r.json()).catch(() => ({}));
+    $("lineNote").append(notification("info", t("me.notLinked.t"), t("me.notLinked.b")),
+      cfg.liffId ? el("a", { class: "cds--link", href: `https://liff.line.me/${cfg.liffId}/link` }, t("me.linkLine")) : "");
+  }
+  await Promise.all([loadToday(), loadRecords()]);
+}
+</script>
+</body>
+</html>

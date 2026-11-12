@@ -1,0 +1,30 @@
+# Simplest self-hosting: one machine, Docker Compose, Cloudflare Tunnel. (Kubernetes manifests: k8s/.)
+#   cp .env.example .env    # fill it in
+#   docker compose up -d --build
+# In the Cloudflare dashboard, point the tunnel's public hostname at  http://app:8787
+services:
+  app:
+    build: .
+    image: sk-duty-notify:1.1.0
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - data:/data
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # Not published on the host: only cloudflared reaches it. For a local test add:  ports: ["127.0.0.1:8787:8787"]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on: [app]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+volumes:
+  data:

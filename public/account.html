@@ -5,8 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -27,12 +28,14 @@ document.getElementById("intro").append(
   el("p", { class: "body secondary" }, t("account.signedInAs", { name: user.displayName, username: user.username })),
   first ? notification("info", t("account.first.title"), t("account.first.body")) : "");
 
+const opts = await fetch("/admin/api/login-options").then((r) => r.json()).catch(() => ({ password: false }));
+const form = document.getElementById("form");
+if (!opts.password && !first) form.replaceWith(el("p", { class: "body" }, t("account.google", { username: user.username })));
 const msg = el("div");
 const cur = textInput({ id: "current", label: t(first ? "account.temporary" : "account.current"), type: "password", autocomplete: "current-password" });
 const nw = textInput({ id: "next", label: t("account.new"), type: "password", autocomplete: "new-password", helper: t("account.newHelp", { min: 12 }) });
 const again = textInput({ id: "again", label: t("account.again"), type: "password", autocomplete: "new-password" });
 const go = button(t("account.submit"), { type: "submit" });
-const form = document.getElementById("form");
 form.append(msg, cur, nw, again, go);
 
 form.addEventListener("submit", async (e) => {

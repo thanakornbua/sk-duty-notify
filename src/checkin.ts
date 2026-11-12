@@ -107,6 +107,9 @@ export interface SubmitInput {
   clientTs?: unknown;
 }
 
+/** Request metadata stored with each attempt. `via` defaults to the LIFF page. */
+export type Meta = { ipHash: string | null; userAgent: string | null; via?: "liff" | "web" };
+
 export interface Attempt {
   dutyId: number | null;
   memberId: number | null;
@@ -116,20 +119,24 @@ export interface Attempt {
   clientTs: number | null;
   ipHash: string | null;
   userAgent: string | null;
+  via: "liff" | "web";
 }
 
-export const confirmKey = (dutyId: number) => `C:${dutyId}`;
+/** Outbox keys of the check-in receipt. (Before 1.1 the confirmation was a LINE push, key C:<duty>.) */
+export const confirmKeys = (dutyId: number) => [`EC:${dutyId}`];
 
 /**
- * Outbox row for the check-in confirmation. Only inserted if THIS request's check-in is the one stored
- * (checked_in_at = now), so a duplicate submit never queues a second message; the dedupe key makes sure anyway.
+ * Outbox row for the check-in receipt (none when receipts are off): an email to the member's roster email, whatever
+ * config.emailMode says (it costs no LINE quota). Only inserted if THIS request's check-in is the one stored
+ * (checked_in_at = now), so a duplicate submit never queues a second receipt; the dedupe key makes sure anyway.
  */
-export function queueConfirm(db: D1Database, now: number, dutyId: number) {
-  return db.prepare(
-    `INSERT OR IGNORE INTO outbox (kind, dedupe_key, member_id, duty_date, duty_id, status, due_at, deadline_at, next_attempt_at, created_at, updated_at)
-     SELECT 'CONFIRM', ?1, member_id, duty_date, id, 'QUEUED', ?2, ?3, ?2, ?2, ?2 FROM duties
-     WHERE id = ?4 AND status = 'CHECKED_IN' AND checked_in_at = ?2`,
-  ).bind(confirmKey(dutyId), now, now + 60 * MIN, dutyId);
+export function queueConfirm(db: D1Database, now: number, dutyId: number): D1PreparedStatement[] {
+  if (!config.confirmOnCheckin) return [];
+  return [db.prepare(
+    `INSERT OR IGNORE INTO outbox (kind, channel, dedupe_key, member_id, duty_date, duty_id, status, due_at, deadline_at, next_attempt_at, created_at, updated_at)
+     SELECT 'CONFIRM', 'email', ?1, d.member_id, d.duty_date, d.id, 'QUEUED', ?2, ?3, ?2, ?2, ?2 FROM duties d JOIN members m ON m.id = d.member_id
+     WHERE d.id = ?4 AND d.status = 'CHECKED_IN' AND d.checked_in_at = ?2 AND m.email IS NOT NULL`,
+  ).bind(confirmKeys(dutyId)[0], now, now + 60 * MIN, dutyId)];
 }
 
 export interface SubmitOutcome {
@@ -140,8 +147,8 @@ export interface SubmitOutcome {
   radiusM?: number;
   allowedAccuracyM?: number;
   duty?: ReturnType<typeof view>;
-  /** Outbox key of the queued confirmation, if one was queued (the caller sends it right away). */
-  confirmKey?: string;
+  /** Outbox keys of the queued confirmation, if queued (the caller sends them right away). */
+  confirmKeys?: string[];
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -150,27 +157,27 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : n
 function logAttempt(db: D1Database, now: number, a: Attempt, result: CheckinResult, extra: { reason?: string; distanceM?: number; pointId?: number; nonceId?: number } = {}) {
   return db.prepare(
     `INSERT INTO checkins (duty_id, member_id, submitted_at, client_ts, lat, lng, accuracy_m, distance_m, point_id, result, reason,
-                           nonce_id, ip_hash, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           nonce_id, ip_hash, user_agent, via)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(a.dutyId, a.memberId, now, a.clientTs, a.lat, a.lng, a.accuracy, extra.distanceM ?? null, extra.pointId ?? null,
-    result, extra.reason ?? null, extra.nonceId ?? null, a.ipHash, a.userAgent);
+    result, extra.reason ?? null, extra.nonceId ?? null, a.ipHash, a.userAgent, a.via);
 }
 
 /** Log a submit that failed before or at identity (no member known, or member not linked). */
-export async function logUnidentified(db: D1Database, clock: Clock, body: SubmitInput, meta: { ipHash: string | null; userAgent: string | null }, reason: string) {
+export async function logUnidentified(db: D1Database, clock: Clock, body: SubmitInput, meta: Meta, reason: string) {
   await logAttempt(db, clock.now(), attemptOf(body, null, meta), "rejected", { reason }).run();
 }
 
 /** duty_id starts null and is filled in only once the duty is known to exist and belong to this member. */
-function attemptOf(body: SubmitInput, memberId: number | null, meta: { ipHash: string | null; userAgent: string | null }): Attempt {
+function attemptOf(body: SubmitInput, memberId: number | null, meta: Meta): Attempt {
   return {
     dutyId: null, memberId, lat: num(body.lat), lng: num(body.lng), accuracy: num(body.accuracy), clientTs: num(body.clientTs),
-    ipHash: meta.ipHash, userAgent: meta.userAgent?.slice(0, 300) ?? null,
+    ipHash: meta.ipHash, userAgent: meta.userAgent?.slice(0, 300) ?? null, via: meta.via ?? "liff",
   };
 }
 
 export async function submitCheckin(
-  db: D1Database, clock: Clock, member: Member, body: SubmitInput, meta: { ipHash: string | null; userAgent: string | null },
+  db: D1Database, clock: Clock, member: Member, body: SubmitInput, meta: Meta,
 ): Promise<SubmitOutcome> {
   const now = clock.now();
   const a = attemptOf(body, member.id, meta);
@@ -247,8 +254,8 @@ export async function submitCheckin(
       `UPDATE duties SET status = 'CHECKED_IN', checked_in_at = ?1, late = ?2, source = 'gps', updated_at = ?1
        WHERE id = ?3 AND status = 'PENDING'`,
     ).bind(now, late, duty.id),
-    ...(config.confirmOnCheckin ? [queueConfirm(db, now, duty.id)] : []),
+    ...queueConfirm(db, now, duty.id),
   ]);
   const fresh = await db.prepare(`${DUTY_SQL} WHERE d.id = ?`).bind(duty.id).first<DutyRow>();
-  return { status: 200, result: "ok", ...detail, duty: view(fresh!, now), confirmKey: config.confirmOnCheckin ? confirmKey(duty.id) : undefined };
+  return { status: 200, result: "ok", ...detail, duty: view(fresh!, now), confirmKeys: config.confirmOnCheckin ? confirmKeys(duty.id) : undefined };
 }

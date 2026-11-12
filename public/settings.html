@@ -5,8 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -20,7 +21,7 @@
 </main>
 <script type="module">
 import { api, button, el, notification, select, shell, textInput } from "/admin-common.js";
-import { dateTime, t } from "/i18n.js";
+import { dateTime, errText, t } from "/i18n.js";
 
 await shell("/settings");
 document.title = t("set.title");
@@ -48,6 +49,19 @@ function build(s) {
   f.confirmOnCheckin.input = confirm;
   f["quietHours.start"] = time("q-start", t("set.quietStart"), s.quietHours.start);
   f["quietHours.end"] = time("q-end", t("set.quietEnd"), s.quietHours.end);
+  f.emailMode = select({ id: "emailMode", label: t("set.emailMode"), value: s.emailMode ?? "off",
+    options: [["off", t("set.email.off")], ["fallback", t("set.email.fallback")], ["all", t("set.email.all")]] });
+  const emailStatus = data.emailConfigured
+    ? notification("success", t("set.email.ready"))
+    : notification("warning", t("set.email.notConfigured.t"), t("set.email.notConfigured.b"));
+  const testOut = el("div");
+  const testBtn = button(t("set.email.test"), { kind: "tertiary", size: "md", disabled: !data.emailConfigured, onclick: async () => {
+    testBtn.disabled = true;
+    const r = await api("POST", "/admin/api/email/test");
+    testBtn.disabled = false;
+    testOut.replaceChildren(r.ok ? notification("success", t("set.email.testSent", { to: r.data.to }))
+      : notification("error", t("set.email.testFailed"), r.data.detail ?? errText(r.data)));
+  } });
   f.earlyGraceMinutes = num("early", t("set.early"), s.earlyGraceMinutes, t("set.earlyHelp"), 0, 120);
   f.lateAfterMinutes = num("late", t("set.lateAfter"), s.lateAfterMinutes, t("set.lateHelp"), 0, 240);
 
@@ -57,6 +71,8 @@ function build(s) {
     section(t("set.window"), el("div", { class: "row row--fields" }, f.earlyGraceMinutes, f.lateAfterMinutes)),
     section(t("set.messages"), el("div", { class: "row row--fields" }, f.reminderTime, f.missedAfterMinutes), el("div", { class: "row row--fields" }, f.messageLanguage), f.confirmOnCheckin),
     section(t("set.quiet"), el("div", { class: "row row--fields" }, f["quietHours.start"], f["quietHours.end"])),
+    section(t("set.email"), el("p", { class: "body secondary" }, t("set.emailIntro")), emailStatus,
+      el("div", { class: "row row--fields" }, f.emailMode, testBtn), testOut),
     el("div", { class: "row", style: "margin-top:1.5rem" }, el("span", { class: "grow" }),
       button(t("set.defaults"), { kind: "ghost", onclick: () => build(data.defaults) }), button(t("act.save"), { type: "submit" })));
 }
@@ -71,6 +87,7 @@ $("form").addEventListener("submit", async (e) => {
     reminderTime: v("reminderTime"), missedAfterMinutes: Number(v("missedAfterMinutes")), messageLanguage: v("messageLanguage"),
     confirmOnCheckin: f.confirmOnCheckin.input.checked, quietHours: { start: v("quietHours.start"), end: v("quietHours.end") },
     earlyGraceMinutes: Number(v("earlyGraceMinutes")), lateAfterMinutes: Number(v("lateAfterMinutes")),
+    emailMode: v("emailMode"),
   };
   const r = await api("POST", "/admin/api/settings", body);
   if (r.ok) {

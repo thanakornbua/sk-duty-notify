@@ -71,7 +71,7 @@ export async function buildToday(db: D1Database, clock: Clock, date?: string) {
 
   const [duties, outbox, attempts, rosterDates, hb, failed] = await Promise.all([
     db.prepare(`${DUTIES_SQL} WHERE d.duty_date = ? AND d.status != 'CANCELLED' ORDER BY d.start_at, m.staff_code`).bind(day).all<DutyRow>(),
-    db.prepare("SELECT id, kind, member_id, duty_id, status, accepted_at, last_error, attempts FROM outbox WHERE duty_date = ?").bind(day).all<OutRow>(),
+    db.prepare("SELECT id, kind, channel, member_id, duty_id, status, accepted_at, last_error, attempts FROM outbox WHERE duty_date = ?").bind(day).all<OutRow & { channel: string }>(),
     db.prepare(`SELECT id, duty_id, member_id, submitted_at, client_ts, lat, lng, accuracy_m, distance_m, result, reason
                 FROM checkins WHERE submitted_at >= ? AND submitted_at < ? ORDER BY submitted_at`).bind(from, to).all<Attempt>(),
     db.prepare("SELECT duty_date FROM roster_dates WHERE duty_date IN (?, ?, ?)").bind(day, today, addDays(today, 1)).all<{ duty_date: string }>(),
@@ -81,11 +81,17 @@ export async function buildToday(db: D1Database, clock: Clock, date?: string) {
 
   const known = new Set(rosterDates.results.map((r) => r.duty_date));
   const pushes = (memberId: number, dutyId: number) => {
-    const pick = (kind: string) => {
-      const o = outbox.results.find((r) => r.kind === kind && r.member_id === memberId && (kind === "REMINDER" || r.duty_id === dutyId));
+    const pick = (kind: string, channel = "line") => {
+      const o = outbox.results.find((r) => r.kind === kind && r.channel === channel && r.member_id === memberId && (kind === "REMINDER" || r.duty_id === dutyId));
       return o ? { status: o.status, acceptedAt: o.accepted_at, error: o.last_error, attempts: o.attempts } : null;
     };
-    return { REMINDER: pick("REMINDER"), PROMPT: pick("PROMPT"), MISSED: pick("MISSED"), CONFIRM: pick("CONFIRM") };
+    const kinds = ["REMINDER", "PROMPT", "MISSED", "CONFIRM"] as const;
+    return {
+      ...Object.fromEntries(kinds.map((k) => [k, pick(k)])) as Record<(typeof kinds)[number], ReturnType<typeof pick>>,
+      // The receipt is an email since 1.1 (older rows were LINE pushes).
+      CONFIRM: pick("CONFIRM", "email") ?? pick("CONFIRM"),
+      email: Object.fromEntries(kinds.map((k) => [k, pick(k, "email")])) as Record<(typeof kinds)[number], ReturnType<typeof pick>>,
+    };
   };
 
   const rows = duties.results.map((d) => {

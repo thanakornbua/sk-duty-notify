@@ -7,7 +7,11 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
-        miniflare: { bindings: { TEST_MIGRATIONS: migrations, ADMIN_TOKEN: "test-token" } },
+        miniflare: { bindings: {
+          TEST_MIGRATIONS: migrations, ADMIN_TOKEN: "test-token", ALLOW_PASSWORD_LOGIN: "1",
+          GOOGLE_CLIENT_ID: "test-client.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "test-secret",
+          GOOGLE_ALLOWED_DOMAINS: "school.test,student.school.test",
+        } },
       }),
     ],
     test: { setupFiles: ["./test/apply-migrations.ts"] },

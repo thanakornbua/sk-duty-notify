@@ -43,20 +43,6 @@ export function passwordProblem(password: unknown, username: string): string | n
   return null;
 }
 
-export const USERNAME_RE = /^[A-Za-z0-9._-]{3,64}$/;
-const TEMP_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"; // 54 symbols, no look-alikes
-
-/** 16 random symbols; rejection sampling (54 * 4 = 216) avoids modulo bias. Shown once, must be changed at sign-in. */
-export function temporaryPassword(): string {
-  let out = "";
-  while (out.length < 16) {
-    for (const b of crypto.getRandomValues(new Uint8Array(32))) {
-      if (b < 216 && out.length < 16) out += TEMP_ALPHABET[b % TEMP_ALPHABET.length];
-    }
-  }
-  return out;
-}
-
 export interface AdminUser { id: number; username: string; display_name: string; must_change: number }
 
 const audit = (db: D1Database, at: number, actor: string, event: string, detail: unknown) =>
@@ -95,16 +81,32 @@ export async function login(db: D1Database, clock: Clock, username: unknown, pas
     return { ok: false, error: "invalid_credentials" };
   }
 
+  await db.prepare("UPDATE admin_users SET failed_count = 0, locked_until = NULL WHERE id = ?").bind(user.id).run();
+  const token = await createSession(db, clock, user, meta, "login");
+  return { ok: true, token, user: { id: user.id, username: user.username, display_name: user.display_name, must_change: user.must_change } };
+}
+
+/** New session for a verified admin (password or Google). Returns the raw token for the cookie; only its hash is stored. */
+export async function createSession(
+  db: D1Database, clock: Clock, user: { id: number; username: string }, meta: { ipHash: string | null; userAgent: string | null }, event: string,
+): Promise<string> {
+  const now = clock.now();
   const token = b64(crypto.getRandomValues(new Uint8Array(32))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   await db.batch([
-    db.prepare("UPDATE admin_users SET failed_count = 0, locked_until = NULL, last_login_at = ? WHERE id = ?").bind(now, user.id),
+    db.prepare("UPDATE admin_users SET last_login_at = ? WHERE id = ?").bind(now, user.id),
     db.prepare(`INSERT INTO admin_sessions (token_hash, user_id, created_at, expires_at, last_seen_at, ip_hash, user_agent)
                 VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .bind(await sha256Hex(token), user.id, now, now + A.sessionHours * 60 * MIN, now, meta.ipHash, meta.userAgent?.slice(0, 300) ?? null),
     db.prepare("DELETE FROM admin_sessions WHERE expires_at <= ? OR last_seen_at <= ?").bind(now, now - A.idleMinutes * MIN),
-    audit(db, now, `admin:${user.username}`, "login", { ipHash: meta.ipHash }),
+    audit(db, now, `admin:${user.username}`, event, { ipHash: meta.ipHash }),
   ]);
-  return { ok: true, token, user: { id: user.id, username: user.username, display_name: user.display_name, must_change: user.must_change } };
+  return token;
+}
+
+/** Active admin with this (lower-case) Google email. */
+export async function adminByEmail(db: D1Database, email: string) {
+  return db.prepare("SELECT id, username, display_name, must_change FROM admin_users WHERE email = ? AND disabled = 0")
+    .bind(email.toLowerCase()).first<AdminUser>();
 }
 
 export function sessionToken(req: Request): string | null {
@@ -166,52 +168,42 @@ export async function changePassword(db: D1Database, clock: Clock, admin: AdminU
 /* ------------------------------------------------------- account management */
 
 export interface AdminRow {
-  id: number; username: string; display_name: string; must_change: number; disabled: number;
+  id: number; username: string; email: string | null; display_name: string; must_change: number; disabled: number;
   locked_until: number | null; created_at: number; last_login_at: number | null;
 }
 
 export async function listAdmins(db: D1Database) {
   return (await db.prepare(
-    "SELECT id, username, display_name, must_change, disabled, locked_until, created_at, last_login_at FROM admin_users ORDER BY username",
+    "SELECT id, username, email, display_name, must_change, disabled, locked_until, created_at, last_login_at FROM admin_users ORDER BY username",
   ).all<AdminRow>()).results;
 }
 
 type Admin = AdminUser & { tokenHash: string };
-type Result = { ok: true; username: string; temporaryPassword?: string } | { ok: false; status: number; error: string };
+type Result = { ok: true; username: string; temporaryPassword?: string } | { ok: false; status: number; error: string; domains?: string };
 
-/** Any admin can create another. The new account starts with a temporary password it must change. */
-export async function createAdmin(db: D1Database, clock: Clock, by: Admin, username: unknown, displayName: unknown): Promise<Result> {
-  if (typeof username !== "string" || !USERNAME_RE.test(username)) return { ok: false, status: 400, error: "invalid_username" };
+export const EMAIL_RE = /^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,190}\.[a-z]{2,}$/;
+
+/**
+ * Any admin can add another by Google email. The account signs in with Google only (no password; must_change 0).
+ * `domains`: allowed Google domains (empty = any).
+ */
+export async function createAdmin(db: D1Database, clock: Clock, by: Admin, email: unknown, displayName: unknown, domains: string[] = []): Promise<Result> {
+  const mail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!EMAIL_RE.test(mail)) return { ok: false, status: 400, error: "invalid_email" };
+  if (domains.length && !domains.includes(mail.split("@")[1])) return { ok: false, status: 400, error: "email_domain_not_allowed", domains: domains.join(", ") } as Result;
   if (typeof displayName !== "string" || !displayName.trim() || displayName.length > 100) return { ok: false, status: 400, error: "invalid_display_name" };
   const now = clock.now();
-  const temp = temporaryPassword();
   try {
     await db.batch([
-      db.prepare("INSERT INTO admin_users (username, display_name, password_hash, must_change, created_at) VALUES (?, ?, ?, 1, ?)")
-        .bind(username, displayName.trim(), await hashPassword(temp), now),
-      audit(db, now, `admin:${by.username}`, "admin_created", { username }),
+      db.prepare("INSERT INTO admin_users (username, email, display_name, password_hash, must_change, created_at) VALUES (?, ?, ?, '', 0, ?)")
+        .bind(mail, mail, displayName.trim(), now),
+      audit(db, now, `admin:${by.username}`, "admin_created", { email: mail }),
     ]);
   } catch (e) {
-    if (String(e).includes("UNIQUE")) return { ok: false, status: 409, error: "username_taken" };
+    if (String(e).includes("UNIQUE")) return { ok: false, status: 409, error: "email_taken" };
     throw e;
   }
-  return { ok: true, username, temporaryPassword: temp };
-}
-
-/** New temporary password; unlocks the account and signs it out everywhere. Your own password: use the Account page. */
-export async function resetAdminPassword(db: D1Database, clock: Clock, by: Admin, id: number): Promise<Result> {
-  if (id === by.id) return { ok: false, status: 400, error: "use_account_page" };
-  const target = await db.prepare("SELECT username FROM admin_users WHERE id = ?").bind(id).first<{ username: string }>();
-  if (!target) return { ok: false, status: 404, error: "not_found" };
-  const now = clock.now();
-  const temp = temporaryPassword();
-  await db.batch([
-    db.prepare("UPDATE admin_users SET password_hash = ?, must_change = 1, failed_count = 0, locked_until = NULL WHERE id = ?")
-      .bind(await hashPassword(temp), id),
-    db.prepare("DELETE FROM admin_sessions WHERE user_id = ?").bind(id),
-    audit(db, now, `admin:${by.username}`, "admin_password_reset", { username: target.username }),
-  ]);
-  return { ok: true, username: target.username, temporaryPassword: temp };
+  return { ok: true, username: mail };
 }
 
 /** Disabling signs the account out everywhere. You cannot disable yourself (so one active admin always remains). */

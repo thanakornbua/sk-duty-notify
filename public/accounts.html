@@ -5,8 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -26,24 +27,19 @@ await shell("/accounts");
 document.title = t("acc.title");
 const $ = (id) => document.getElementById(id);
 const msg = el("div");
-const username = textInput({ id: "u", label: t("acc.username"), helper: t("acc.usernameHelp"), autocapitalize: "none", spellcheck: "false", autocomplete: "off" });
+const opts = await fetch("/admin/api/login-options").then((r) => r.json()).catch(() => ({ domains: [] }));
+const email = textInput({ id: "e", label: t("acc.email"), type: "email", helper: opts.domains.length ? opts.domains.map((d) => `@${d}`).join(" · ") : t("acc.emailHelp"), autocapitalize: "none", spellcheck: "false", autocomplete: "off" });
 const display = textInput({ id: "n", label: t("acc.displayName"), autocomplete: "off" });
-$("form").append(msg, el("div", { class: "row row--fields" }, username, display, button(t("acc.create"), { size: "md", onclick: create })));
-
-const showTemp = (u, pw) => modal({
-  title: t("acc.tempTitle", { username: u }), secondary: null,
-  body: el("div", { class: "stack" }, el("p", { class: "body" }, t("acc.tempBody")), el("div", { class: "code-big", style: "letter-spacing:.08em" }, pw)),
-});
+$("form").append(msg, el("div", { class: "row row--fields" }, email, display, button(t("acc.create"), { size: "md", onclick: create })));
 
 async function create() {
-  username.invalid(null); display.invalid(null);
-  const r = await api("POST", "/admin/api/admins", { username: username.input.value.trim(), displayName: display.input.value.trim() });
+  email.invalid(null); display.invalid(null);
+  const r = await api("POST", "/admin/api/admins", { email: email.input.value.trim(), displayName: display.input.value.trim() });
   if (!r.ok) {
-    (r.data.error === "invalid_display_name" ? display : username).invalid(errText(r.data));
+    (r.data.error === "invalid_display_name" ? display : email).invalid(errText(r.data));
     return;
   }
-  username.input.value = display.input.value = "";
-  await showTemp(r.data.username, r.data.temporaryPassword);
+  email.input.value = display.input.value = "";
   load();
 }
 
@@ -51,7 +47,6 @@ async function act(a, path, confirmKey) {
   if (confirmKey && !(await modal({ title: t(confirmKey, { username: a.username }), body: el("span"), primary: t("act.done"), danger: path === "disable" }))) return;
   const r = await api("POST", `/admin/api/admins/${a.id}/${path}`);
   if (!r.ok) { msg.replaceChildren(notification("error", t("acc.failed"), errText(r.data))); return; }
-  if (r.data.temporaryPassword) await showTemp(r.data.username, r.data.temporaryPassword);
   load();
 }
 
@@ -60,17 +55,16 @@ async function load() {
   if (!ok) return;
   $("list").replaceChildren(dataTable({
     title: t("acc.title"),
-    columns: [t("col.username"), t("col.name"), t("col.status"), t("col.lastLogin"), ""],
+    columns: [t("col.email"), t("col.name"), t("col.status"), t("col.lastLogin"), ""],
     rows: data.admins.map((a) => {
       const self = a.id === data.self;
       return [
-        el("span", { class: "mono" }, a.username), a.displayName,
+        el("span", { class: "mono" }, a.email ?? a.username), a.displayName,
         el("div", {}, a.disabled ? tag(t("acc.disabled"), "red") : tag(t("acc.active"), "green"),
           a.locked ? tag(t("acc.locked"), "magenta") : null, a.mustChange ? tag(t("acc.mustChange"), "warm-gray") : null,
           self ? tag(t("acc.you"), "blue") : null),
         a.lastLoginAt ? dateTime(a.lastLoginAt) : el("span", { class: "helper" }, t("common.never")),
         self ? "" : el("div", { class: "nowrap" },
-          button(t("acc.reset"), { kind: "ghost", size: "sm", onclick: () => act(a, "reset-password", "acc.confirmReset") }),
           a.disabled ? button(t("acc.enable"), { kind: "ghost", size: "sm", onclick: () => act(a, "enable") })
             : button(t("acc.disable"), { kind: "danger--ghost", size: "sm", onclick: () => act(a, "disable", "acc.confirmDisable") })),
       ];

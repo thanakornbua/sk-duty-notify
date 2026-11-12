@@ -1,5 +1,5 @@
 import type { Clock } from "./clock";
-import { config, type Lang } from "./config";
+import { config, type EmailMode, type Lang } from "./config";
 import { MIN } from "./time";
 
 /**
@@ -16,6 +16,7 @@ export interface Schedule {
   quietHours: { start: string; end: string };
   confirmOnCheckin: boolean;
   messageLanguage: Lang;
+  emailMode: EmailMode;
 }
 
 const pick = (): Schedule => structuredClone({
@@ -27,6 +28,7 @@ const pick = (): Schedule => structuredClone({
   quietHours: config.quietHours,
   confirmOnCheckin: config.confirmOnCheckin,
   messageLanguage: config.messageLanguage,
+  emailMode: config.emailMode,
 });
 
 export const DEFAULTS: Schedule = pick();
@@ -61,13 +63,16 @@ export function validateSchedule(b: any): { ok: true; value: Schedule } | { ok: 
   if (b.quietHours.start === b.quietHours.end) return bad("quietHours", "invalid");
   if (typeof b.confirmOnCheckin !== "boolean") return bad("confirmOnCheckin");
   if (b.messageLanguage !== "th" && b.messageLanguage !== "en") return bad("messageLanguage");
+  // Older saved settings (and clients) have no emailMode: keep it off.
+  const emailMode = b.emailMode ?? "off";
+  if (!["off", "fallback", "all"].includes(emailMode)) return bad("emailMode");
   return {
     ok: true,
     value: {
       shifts: { AM: { start: b.shifts.AM.start, end: b.shifts.AM.end }, PM: { start: b.shifts.PM.start, end: b.shifts.PM.end } },
       reminderTime: b.reminderTime, earlyGraceMinutes: b.earlyGraceMinutes, lateAfterMinutes: b.lateAfterMinutes,
       missedAfterMinutes: b.missedAfterMinutes, quietHours: { start: b.quietHours.start, end: b.quietHours.end },
-      confirmOnCheckin: b.confirmOnCheckin, messageLanguage: b.messageLanguage,
+      confirmOnCheckin: b.confirmOnCheckin, messageLanguage: b.messageLanguage, emailMode,
     },
   };
 }

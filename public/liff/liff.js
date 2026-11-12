@@ -1,5 +1,5 @@
 // Shared by the LIFF pages. The page never decides who the user is: it sends LINE's ID token and the server verifies it.
-import { langSwitch, notification } from "/admin-common.js";
+import { footer, langSwitch, notification } from "/admin-common.js";
 import { applyStatic } from "/i18n.js";
 
 /** Language + static texts + the ไทย/English switch in the corner. */
@@ -9,6 +9,9 @@ export function setupPage() {
   corner.className = "lang-corner";
   corner.append(langSwitch());
   document.body.append(corner);
+  const foot = footer();
+  foot.classList.add("app-footer--narrow");
+  document.body.append(foot);
 }
 
 export const $ = (id) => document.getElementById(id);

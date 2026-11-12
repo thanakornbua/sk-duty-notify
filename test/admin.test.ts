@@ -96,12 +96,18 @@ describe("admin API", () => {
     expect((await (await checkIn(2)).json() as any).result).toBe("outside_geofence");
   });
 
-  it("members upsert and link codes", async () => {
-    expect((await admin(line, clock, "POST", "/admin/api/members", { members: [{ staffCode: "S100", label: "Person 100" }, { staffCode: "first.la", label: "Dot code" }] })).status).toBe(200);
-    expect((await admin(line, clock, "POST", "/admin/api/members", { members: [{ staffCode: "bad code", label: "x" }] })).status).toBe(400);
-    const m = await db.prepare("SELECT id FROM members WHERE staff_code = 'S100'").first<{ id: number }>();
-    const r = (await (await admin(line, clock, "POST", `/admin/api/members/${m!.id}/link-code`)).json()) as any;
-    expect(r.code).toMatch(/^[A-Z2-9]{8}$/);
+  it("members upsert with Google emails", async () => {
+    const up = (members: unknown[]) => admin(line, clock, "POST", "/admin/api/members", { members });
+    expect((await up([{ staffCode: "S100", label: "Person 100", email: "P100@School.test" }, { staffCode: "first.la", label: "Dot code" }])).status).toBe(200);
+    expect((await db.prepare("SELECT email FROM members WHERE staff_code = 'S100'").first())!.email).toBe("p100@school.test");
+    expect((await up([{ staffCode: "bad code", label: "x" }])).status).toBe(400);
+    expect(((await (await up([{ staffCode: "S101", label: "x", email: "x@gmail.com" }])).json()) as any).error).toBe("invalid_member_email");
+    expect(((await (await up([{ staffCode: "S101", label: "x", email: "a@school.test" }, { staffCode: "S102", label: "y", email: "A@school.test" }])).json()) as any))
+      .toEqual({ error: "duplicate_member_email", index: 2 });
+    expect((await up([{ staffCode: "S103", label: "z", email: "p100@school.test" }])).status).toBe(409);
+    // Re-upserting without an email keeps the stored one.
+    await up([{ staffCode: "S100", label: "Renamed" }]);
+    expect((await db.prepare("SELECT email FROM members WHERE staff_code = 'S100'").first())!.email).toBe("p100@school.test");
   });
 });
 

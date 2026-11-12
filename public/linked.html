@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="th">
+<head>
+<title>SK Duty</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/theme.js"></script>
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
+<link rel="stylesheet" href="/vendor/carbon-styles.min.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="lang-corner" id="lang"></div>
+<main class="page page--bare page--narrow">
+  <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
+  <p class="helper" data-i18n="app.name"></p>
+  <h1 class="h1" data-i18n="linked.title"></h1>
+  <div id="msg"></div>
+</main>
+<script type="module">
+// Result of the member's Google sign-in (opened in the phone's normal browser, not in LINE).
+// The query only carries a result code and the member's display name; both are shown as text.
+import { el, footer, langSwitch, notification } from "/admin-common.js";
+import { applyStatic, has, t } from "/i18n.js";
+
+applyStatic();
+document.getElementById("lang").append(langSwitch());
+document.body.append(Object.assign(footer(), { className: "app-footer app-footer--narrow helper" }));
+document.title = t("linked.title");
+const q = new URLSearchParams(location.search);
+const r = q.get("r") ?? "";
+const msg = document.getElementById("msg");
+if (r === "ok") {
+  msg.append(notification("success", t("liff.link.done.title", { name: (q.get("name") ?? "").slice(0, 100) }), t("linked.ok.b")),
+    el("a", { class: "cds--btn cds--btn--tertiary cds--btn--full", href: "/me", style: "margin-top:1rem" }, t("linked.portal")));
+} else {
+  const k = `ge.${r}`;
+  msg.append(notification("error", has(`${k}.t`) ? t(`${k}.t`) : t("liff.error"), has(`${k}.b`) ? t(`${k}.b`) : r),
+    el("p", { class: "body secondary" }, t("linked.retry")));
+}
+</script>
+</body>
+</html>

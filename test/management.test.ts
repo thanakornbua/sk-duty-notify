@@ -14,48 +14,40 @@ const signIn = (username: string, password: string) => call(line, clock, "POST",
 beforeEach(async () => { await reset(); line = new FakeLineClient(); clock = new FixedClock(at(D, "09:00")); });
 
 describe("management accounts", () => {
-  it("an admin creates another account; it signs in with the temporary password and must change it", async () => {
-    const r = await j(await admin(line, clock, "POST", "/admin/api/admins", { username: "coord.b", displayName: "Coordinator B" }));
-    expect(r.status).toBe(201);
-    expect(r.body.temporaryPassword).toMatch(/^[A-HJ-NP-Za-hj-kmnp-z2-9]{16}$/);
-    const login = await j(await signIn("coord.b", r.body.temporaryPassword));
-    expect(login.body.user).toEqual({ username: "coord.b", displayName: "Coordinator B", mustChange: true });
+  const create = (email: string, displayName: string) => admin(line, clock, "POST", "/admin/api/admins", { email, displayName });
+
+  it("an admin adds another by Google email; it has no usable password", async () => {
+    const r = await j(await create("Coord.B@school.test", "Coordinator B"));
+    expect(r).toEqual({ status: 201, body: { ok: true, username: "coord.b@school.test" } });
+    expect((await signIn("coord.b@school.test", "")).status).toBe(401);
     const list = await j(await admin(line, clock, "GET", "/admin/api/admins"));
-    expect(list.body.admins.map((a: any) => [a.username, a.mustChange])).toEqual([["coord.b", true], [ADMIN.username, false]]);
-    expect(list.body.admins.find((a: any) => a.username === "coord.b").lastLoginAt).toBe(clock.now());
+    expect(list.body.admins.map((a: any) => [a.username, a.email, a.mustChange])).toEqual([
+      ["coord.b@school.test", "coord.b@school.test", false], [ADMIN.username, null, false]]);
     expect((await db.prepare("SELECT actor FROM audit_log WHERE event = 'admin_created'").first())!.actor).toBe(`admin:${ADMIN.username}`);
   });
 
-  it("validates usernames and refuses duplicates (case-insensitive)", async () => {
-    expect((await j(await admin(line, clock, "POST", "/admin/api/admins", { username: "a b", displayName: "x" }))).body.error).toBe("invalid_username");
-    expect((await j(await admin(line, clock, "POST", "/admin/api/admins", { username: "abc", displayName: "" }))).body.error).toBe("invalid_display_name");
-    expect((await j(await admin(line, clock, "POST", "/admin/api/admins", { username: ADMIN.username.toUpperCase(), displayName: "x" })))).toEqual({ status: 409, body: { error: "username_taken" } });
+  it("validates emails and the allowed domains, and refuses duplicates", async () => {
+    expect((await j(await create("not-an-email", "x"))).body.error).toBe("invalid_email");
+    expect((await j(await create("x@gmail.com", "x"))).body).toEqual({ error: "email_domain_not_allowed", domains: "school.test, student.school.test" });
+    expect((await j(await create("a@school.test", ""))).body.error).toBe("invalid_display_name");
+    await create("a@school.test", "A");
+    expect(await j(await create("A@school.test", "A again"))).toEqual({ status: 409, body: { error: "email_taken" } });
   });
 
-  it("reset gives a new temporary password and signs the account out; disable blocks it; never on yourself", async () => {
-    const created = await j(await admin(line, clock, "POST", "/admin/api/admins", { username: "coord.c", displayName: "C" }));
-    const id = (await db.prepare("SELECT id FROM admin_users WHERE username = 'coord.c'").first<{ id: number }>())!.id;
-    const session = (await signIn("coord.c", created.body.temporaryPassword)).headers.get("set-cookie")!.split(";")[0];
-    const reset1 = await j(await admin(line, clock, "POST", `/admin/api/admins/${id}/reset-password`));
-    expect(reset1.body.temporaryPassword).not.toBe(created.body.temporaryPassword);
-    expect((await call(line, clock, "GET", "/admin/api/me", undefined, { cookie: session })).status).toBe(401);
-    expect((await signIn("coord.c", created.body.temporaryPassword)).status).toBe(401);
-    expect((await signIn("coord.c", reset1.body.temporaryPassword)).status).toBe(200);
-
+  it("disable signs the account out and blocks it; never on yourself", async () => {
+    await create("c@school.test", "C");
+    const id = (await db.prepare("SELECT id FROM admin_users WHERE email = 'c@school.test'").first<{ id: number }>())!.id;
+    await db.prepare("INSERT INTO admin_sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES ('h', ?, 0, 9e15, 9e15)").bind(id).run();
     expect((await admin(line, clock, "POST", `/admin/api/admins/${id}/disable`)).status).toBe(200);
-    expect((await signIn("coord.c", reset1.body.temporaryPassword)).status).toBe(401);
+    expect(await db.prepare("SELECT 1 FROM admin_sessions WHERE user_id = ?").bind(id).first()).toBeNull();
+    expect((await j(await admin(line, clock, "GET", "/admin/api/admins"))).body.admins.find((a: any) => a.id === id).disabled).toBe(true);
     expect((await admin(line, clock, "POST", `/admin/api/admins/${id}/enable`)).status).toBe(200);
-    expect((await signIn("coord.c", reset1.body.temporaryPassword)).status).toBe(200);
-
     expect((await j(await admin(line, clock, "POST", "/admin/api/admins/1/disable"))).body.error).toBe("cannot_disable_self");
-    expect((await j(await admin(line, clock, "POST", "/admin/api/admins/1/reset-password"))).body.error).toBe("use_account_page");
   });
 
-  it("an account that still has a temporary password cannot manage accounts", async () => {
-    const created = await j(await admin(line, clock, "POST", "/admin/api/admins", { username: "coord.d", displayName: "D" }));
-    const session = (await signIn("coord.d", created.body.temporaryPassword)).headers.get("set-cookie")!.split(";")[0];
-    const r = await call(line, clock, "POST", "/admin/api/admins", { username: "evil", displayName: "x" }, { cookie: session, ...ORIGIN });
-    expect(r.status).toBe(403);
+  it("a break-glass account that still has a temporary password cannot manage accounts", async () => {
+    await db.prepare("UPDATE admin_users SET must_change = 1 WHERE id = 1").run();
+    expect((await create("e@school.test", "E")).status).toBe(403);
   });
 });
 

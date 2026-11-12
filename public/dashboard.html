@@ -5,8 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -55,10 +56,13 @@ function member(d) {
 }
 
 function pushes(p) {
-  return el("div", {}, ["REMINDER", "PROMPT", "MISSED", "CONFIRM"].map((k) => {
-    const x = p[k];
+  // LINE pushes, the email receipt (CONFIRM), and email copies of the other messages when email notices are on.
+  const rows = [...["REMINDER", "PROMPT", "MISSED", "CONFIRM"].map((k) => [k, p[k], k === "CONFIRM"]),
+    ...["REMINDER", "PROMPT", "MISSED"].map((k) => [k, p.email?.[k], true])];
+  return el("div", {}, rows.map(([k, x, email]) => {
     if (!x) return null;
-    return el("div", { title: x.error ?? "" }, el("span", { class: "helper" }, `${t("kind." + k)} `), tag(label("push", x.status), PUSH_COLOR[x.status] ?? "gray"),
+    return el("div", { title: x.error ?? "" }, el("span", { class: "helper" }, `${t("kind." + k)}${email ? ` · ${t("dash.email")}` : ""} `),
+      tag(label("push", x.status), PUSH_COLOR[x.status] ?? "gray"),
       x.status === "FAILED" && x.error ? el("span", { class: "helper" }, x.error) : null);
   }));
 }

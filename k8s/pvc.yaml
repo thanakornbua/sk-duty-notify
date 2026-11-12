@@ -1,0 +1,11 @@
+# SQLite database + daily backups. k3s' default "local-path" class stores it on the node's disk
+# (/var/lib/rancher/k3s/storage/...). Copy /data/backups off the machine regularly (see docs/self-hosting.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sk-duty-notify-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi

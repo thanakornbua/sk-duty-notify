@@ -5,8 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="/theme.js"></script>
-<link rel="icon" type="image/png" href="/brand/emblem-32.png">
-<link rel="apple-touch-icon" href="/brand/emblem-192.png">
+<link rel="icon" type="image/svg+xml" href="/brand/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/logo-32.png">
+<link rel="apple-touch-icon" href="/brand/logo-180.png">
 <link rel="stylesheet" href="/vendor/carbon-styles.min.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -16,47 +17,68 @@
   <img class="brand-hero" src="/brand/emblem-192.png" alt="" width="64" height="64">
   <p class="helper" data-i18n="app.name"></p>
   <h1 class="h1" data-i18n="login.title"></h1>
-  <form id="form" class="stack" novalidate></form>
+  <div id="msg"></div>
+  <div id="google" class="stack"></div>
+  <form id="form" class="stack" novalidate hidden style="margin-top:3rem"></form>
+  <p class="body secondary" style="margin-top:2rem"><span data-i18n="login.memberHint"></span> <a class="cds--link" href="/me" data-i18n="login.memberLink"></a></p>
 </main>
 <script type="module">
-import { api, button, el, langSwitch, notification, textInput } from "/admin-common.js";
-import { applyStatic, t } from "/i18n.js";
+import { api, button, el, footer, langSwitch, notification, textInput } from "/admin-common.js";
+import { applyStatic, has, t } from "/i18n.js";
 
 applyStatic();
 document.title = t("login.title");
 document.getElementById("lang").append(langSwitch());
-const msg = el("div");
-const user = textInput({ id: "username", label: t("login.username"), autocomplete: "username", autocapitalize: "none", spellcheck: "false" });
-const pass = textInput({ id: "password", label: t("login.password"), type: "password", autocomplete: "current-password" });
-const go = button(t("login.submit"), { type: "submit", full: true });
-const form = document.getElementById("form");
-form.append(msg, user, pass, go);
-user.input.focus();
+document.body.append(Object.assign(footer(), { className: "app-footer app-footer--narrow helper" }));
+const msg = document.getElementById("msg");
+const params = new URLSearchParams(location.search);
 
 // Already signed in? Go straight on.
 fetch("/admin/api/me", { credentials: "same-origin" }).then((r) => { if (r.ok) location.replace(next()); });
 
 function next() {
-  const n = new URLSearchParams(location.search).get("next") ?? "";
+  const n = params.get("next") ?? "";
   return n.startsWith("/") && !n.startsWith("//") ? n : "/dashboard"; // same-site paths only
 }
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  user.invalid(user.input.value.trim() ? null : t("login.needUsername"));
-  pass.invalid(pass.input.value ? null : t("login.needPassword"));
-  if (!user.input.value.trim() || !pass.input.value) return;
-  go.disabled = true;
-  msg.replaceChildren();
-  const { ok, data } = await api("POST", "/admin/api/login", { username: user.input.value.trim(), password: pass.input.value });
-  go.disabled = false;
-  if (ok) { location.replace(data.user.mustChange ? "/account?first=1" : next()); return; }
-  pass.input.value = "";
-  msg.replaceChildren(data.error === "locked"
-    ? notification("error", t("login.locked.title"), t("login.locked.body", { time: new Date(data.retryAt).toLocaleTimeString() }))
-    : data.error === "rate_limited" ? notification("error", t("login.rate.title"), t("login.rate.body"))
-    : notification("error", t("login.failed.title"), t("login.failed.body")));
-});
+// Error coming back from Google (?error=code).
+const err = params.get("error");
+if (err) msg.append(notification("error", has(`ge.${err}.t`) ? t(`ge.${err}.t`) : t("login.failed.title"), has(`ge.${err}.b`) ? t(`ge.${err}.b`) : err));
+
+const opts = await fetch("/admin/api/login-options").then((r) => r.json()).catch(() => ({ google: false, password: false, domains: [] }));
+if (opts.google) {
+  const a = el("a", { class: "cds--btn cds--btn--primary cds--btn--full", href: `/auth/google/admin?next=${encodeURIComponent(next())}` }, t("login.google"));
+  document.getElementById("google").append(a, opts.domains.length ? el("p", { class: "helper" }, t("login.googleHint", { domains: opts.domains.join(", ") })) : "");
+} else if (!err) {
+  msg.append(notification("warning", t("ge.google_not_configured.t"), t("ge.google_not_configured.b")));
+}
+
+// Break-glass password login, only when the server allows it (ALLOW_PASSWORD_LOGIN=1).
+if (opts.password) {
+  const form = document.getElementById("form");
+  form.hidden = false;
+  const fmsg = el("div");
+  const user = textInput({ id: "username", label: t("login.username"), autocomplete: "username", autocapitalize: "none", spellcheck: "false" });
+  const pass = textInput({ id: "password", label: t("login.password"), type: "password", autocomplete: "current-password" });
+  const go = button(t("login.submit"), { type: "submit", kind: opts.google ? "tertiary" : "primary", full: true });
+  form.append(el("h2", { class: "h3" }, t("login.passwordTitle")), fmsg, user, pass, go);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    user.invalid(user.input.value.trim() ? null : t("login.needUsername"));
+    pass.invalid(pass.input.value ? null : t("login.needPassword"));
+    if (!user.input.value.trim() || !pass.input.value) return;
+    go.disabled = true;
+    fmsg.replaceChildren();
+    const { ok, data } = await api("POST", "/admin/api/login", { username: user.input.value.trim(), password: pass.input.value });
+    go.disabled = false;
+    if (ok) { location.replace(data.user.mustChange ? "/account?first=1" : next()); return; }
+    pass.input.value = "";
+    fmsg.replaceChildren(data.error === "locked"
+      ? notification("error", t("login.locked.title"), t("login.locked.body", { time: new Date(data.retryAt).toLocaleTimeString() }))
+      : data.error === "rate_limited" ? notification("error", t("login.rate.title"), t("login.rate.body"))
+      : notification("error", t("login.failed.title"), t("login.failed.body")));
+  });
+}
 </script>
 </body>
 </html>

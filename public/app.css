@@ -63,3 +63,18 @@ td .helper { display: block; }
   .cds--header__global .who { display: none; }
 }
 .cds--header__global { align-items: center; gap: .5rem; padding-right: .5rem; }
+/* Footer on every page: app name + credits link. */
+.app-footer { max-width: 80rem; margin: 0 auto; padding: 1.5rem 1rem 2.5rem; display: flex; gap: .5rem; align-items: center; border-top: 1px solid var(--cds-border-subtle-01); }
+.page--narrow + .app-footer, .app-footer.app-footer--narrow { max-width: 30rem; }
+/* Member portal */
+.kpis.kpis--small { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 40rem) { .kpis.kpis--small { grid-template-columns: repeat(2, 1fr); } }
+.kpis--small .cds--tile { min-height: 4.5rem; }
+.kpis--small .kpi { font-size: 1.5rem; line-height: 2rem; }
+.who-line { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+/* Credits */
+.credit-dev { padding: 1.5rem; }
+.credit-dev img { width: 100%; max-width: 30rem; }
+.link-list { list-style: none; padding: 0; margin: 0; }
+.link-list li { padding: .75rem 0; border-bottom: 1px solid var(--cds-border-subtle-01); }
+.link-list li:last-child { border-bottom: 0; }
